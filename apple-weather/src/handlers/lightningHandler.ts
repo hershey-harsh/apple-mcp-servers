@@ -1,0 +1,425 @@
+/**
+ * Handler for get_lightning_activity tool
+ * Provides real-time lightning strike monitoring and safety assessment
+ */
+
+import {
+  LightningActivityParams,
+  LightningActivityResponse,
+  LightningMonitoringCoverage,
+  LightningStrike,
+  LightningStatistics,
+  LightningSafetyAssessment,
+  LightningSafetyLevel
+} from '../types/lightning.js';
+import { blitzortungService } from '../services/blitzortung.js';
+import { LocationStore } from '../services/locationStore.js';
+import { GeocodingService } from '../services/geocoding.js';
+import { resolveLocationAsync, prependLocationLine } from '../utils/locationResolver.js';
+import { validateLatitude, validateLongitude, validateDetail, DetailLevel } from '../utils/validation.js';
+import { logger, redactCoordinatesForLogging } from '../utils/logger.js';
+import { ValidationError } from '../errors/ApiError.js';
+
+interface LightningActivityArgs {
+  latitude?: number;
+  longitude?: number;
+  location_name?: string;
+  city_name?: string;
+  radius?: number;
+  timeWindow?: number;
+  detail?: 'summary' | 'standard' | 'full';
+}
+
+/**
+ * Tool entry point: resolve the location (coordinates, saved name, or geocoded
+ * city), fetch lightning activity, and format it with a resolved-location header.
+ */
+export async function handleGetLightningActivity(
+  args: unknown,
+  locationStore: LocationStore,
+  geocodingService: GeocodingService
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  const typedArgs = (args ?? {}) as LightningActivityArgs;
+  const resolved = await resolveLocationAsync(typedArgs, locationStore, geocodingService);
+
+  // Output verbosity: 'full' lifts the listed-strike cap to 25 (not unbounded).
+  // Statistics are computed over ALL strikes at every level — unaffected.
+  const detail = validateDetail(typedArgs.detail);
+
+  const result = await getLightningActivity({
+    latitude: resolved.latitude,
+    longitude: resolved.longitude,
+    radius: typedArgs.radius,
+    timeWindow: typedArgs.timeWindow
+  });
+
+  const formatted = formatLightningActivityResponse(result, detail);
+
+  return prependLocationLine({
+    content: [
+      {
+        type: 'text',
+        text: formatted
+      }
+    ]
+  }, resolved);
+}
+
+/**
+ * Validate lightning activity request parameters
+ */
+function validateLightningParams(params: LightningActivityParams): void {
+  // Validate coordinates
+  validateLatitude(params.latitude);
+  validateLongitude(params.longitude);
+
+  // Validate radius
+  if (params.radius !== undefined) {
+    if (typeof params.radius !== 'number' || params.radius < 1 || params.radius > 500) {
+      throw new ValidationError(
+        'radius must be a number between 1 and 500 km',
+        'radius',
+        params.radius
+      );
+    }
+  }
+
+  // Validate time window
+  if (params.timeWindow !== undefined) {
+    if (typeof params.timeWindow !== 'number' || params.timeWindow < 5 || params.timeWindow > 120) {
+      throw new ValidationError(
+        'timeWindow must be a number between 5 and 120 minutes',
+        'timeWindow',
+        params.timeWindow
+      );
+    }
+  }
+}
+
+/**
+ * Calculate lightning activity statistics
+ */
+function calculateStatistics(strikes: LightningStrike[], radiusKm: number, timeWindowMinutes: number): LightningStatistics {
+  if (strikes.length === 0) {
+    return {
+      totalStrikes: 0,
+      cloudToGroundStrikes: 0,
+      intraCloudStrikes: 0,
+      averageDistance: 0,
+      nearestDistance: 0,
+      strikesPerMinute: 0,
+      densityPerSqKm: 0
+    };
+  }
+
+  // Count cloud-to-ground vs intra-cloud (based on polarity and amplitude)
+  // Typically, stronger amplitude indicates cloud-to-ground
+  const cloudToGround = strikes.filter(s => Math.abs(s.amplitude) > 20).length;
+  const intraCloud = strikes.length - cloudToGround;
+
+  // Calculate average distance
+  const totalDistance = strikes.reduce((sum, s) => sum + (s.distance || 0), 0);
+  const averageDistance = totalDistance / strikes.length;
+
+  // Nearest distance
+  const nearestDistance = strikes[0]?.distance || 0;
+
+  // Strikes per minute
+  const strikesPerMinute = strikes.length / timeWindowMinutes;
+
+  // Density per square km (area of search circle)
+  const searchArea = Math.PI * radiusKm * radiusKm;
+  const densityPerSqKm = strikes.length / searchArea;
+
+  return {
+    totalStrikes: strikes.length,
+    cloudToGroundStrikes: cloudToGround,
+    intraCloudStrikes: intraCloud,
+    averageDistance,
+    nearestDistance,
+    strikesPerMinute,
+    densityPerSqKm
+  };
+}
+
+/**
+ * Assess safety level based on lightning activity
+ */
+function assessSafety(strikes: LightningStrike[], statistics: LightningStatistics): LightningSafetyAssessment {
+  const nearestStrike = strikes[0] || null;
+  const nearestDistance = nearestStrike?.distance || null;
+  const nearestTime = nearestStrike?.timestamp || null;
+
+  // Determine if there's active thunderstorm activity
+  // Active if: strikes in last 10 minutes OR high strike rate
+  const recentStrikes = strikes.filter(s => {
+    const ageMinutes = (Date.now() - s.timestamp.getTime()) / (1000 * 60);
+    return ageMinutes <= 10;
+  });
+  const isActiveThunderstorm = recentStrikes.length > 0 || statistics.strikesPerMinute > 0.5;
+
+  let level: LightningSafetyLevel;
+  let message: string;
+  const recommendations: string[] = [];
+
+  // Safety assessment based on nearest strike distance
+  if (nearestDistance === null || nearestDistance > 50) {
+    level = 'safe';
+    message = 'No significant lightning activity detected in the area.';
+    recommendations.push('Continue to monitor weather conditions.');
+    recommendations.push('Lightning can strike from distant storms, so stay alert to changing conditions.');
+  } else if (nearestDistance > 16) {
+    level = 'elevated';
+    message = `Lightning detected ${nearestDistance.toFixed(1)} km away. Thunderstorm in the vicinity.`;
+    recommendations.push('Move activities indoors if possible.');
+    recommendations.push('Avoid open areas, tall objects, and bodies of water.');
+    recommendations.push('If outdoors, seek shelter in a substantial building or hard-topped vehicle.');
+    recommendations.push('Monitor conditions closely - storms can move quickly.');
+  } else if (nearestDistance > 8) {
+    level = 'high';
+    message = `Lightning strike detected ${nearestDistance.toFixed(1)} km away. High risk - seek shelter immediately.`;
+    recommendations.push('SEEK SHELTER IMMEDIATELY in a substantial building or hard-topped vehicle.');
+    recommendations.push('Do NOT shelter under trees or in open-sided structures.');
+    recommendations.push('Stay away from windows, doors, and electrical equipment.');
+    recommendations.push('If caught outside, crouch low with feet together and hands on knees.');
+    recommendations.push('Wait 30 minutes after the last thunder before resuming outdoor activities.');
+  } else {
+    level = 'extreme';
+    message = `EXTREME DANGER: Lightning strike within ${nearestDistance?.toFixed(1)} km. You are in immediate danger.`;
+    recommendations.push('⚠️ TAKE IMMEDIATE SHELTER - Lightning is striking nearby!');
+    recommendations.push('Get inside a substantial building or hard-topped vehicle NOW.');
+    recommendations.push('If no shelter available, crouch low immediately with feet together.');
+    recommendations.push('Do NOT lie flat - minimize contact with ground.');
+    recommendations.push('Stay away from tall objects, water, and metal objects.');
+    recommendations.push('Remain in shelter for 30 minutes after the last thunder.');
+  }
+
+  // Add activity-specific recommendations
+  if (isActiveThunderstorm) {
+    if (level === 'safe') {
+      recommendations.unshift('Active thunderstorm detected in the region. Conditions may change rapidly.');
+    }
+    recommendations.push('Thunderstorm is active - expect continued lightning activity.');
+  }
+
+  return {
+    level,
+    message,
+    recommendations,
+    nearestStrikeDistance: nearestDistance,
+    nearestStrikeTime: nearestTime,
+    isActiveThunderstorm
+  };
+}
+
+/**
+ * Get lightning activity for a location
+ */
+export async function getLightningActivity(params: LightningActivityParams): Promise<LightningActivityResponse> {
+  // Validate parameters
+  validateLightningParams(params);
+
+  const { latitude, longitude, radius = 100, timeWindow = 60 } = params;
+
+  // Redact coordinates for logging to protect user privacy
+  const redacted = redactCoordinatesForLogging(latitude, longitude);
+  logger.info('Lightning activity requested', {
+    latitude: redacted.lat,
+    longitude: redacted.lon,
+    radius,
+    timeWindow
+  });
+
+  // Fetch lightning strikes
+  const strikes = await blitzortungService.getLightningStrikes(
+    latitude,
+    longitude,
+    radius,
+    timeWindow
+  );
+
+  // Calculate statistics
+  const statistics = calculateStatistics(strikes, radius, timeWindow);
+
+  // Assess safety
+  const safety = assessSafety(strikes, statistics);
+
+  const now = new Date();
+  const searchStart = new Date(now.getTime() - timeWindow * 60 * 1000);
+
+  // Strikes only accumulate while the area's live subscriptions are active. If
+  // monitoring began after the start of the requested window (fresh server, or
+  // first query for this area), a "no strikes" result is inconclusive — say so
+  // instead of implying verified safety.
+  const coverageStart = blitzortungService.getCoverageStart(latitude, longitude, radius);
+  const coverageMinutes = coverageStart
+    ? Math.max(0, Math.min(timeWindow, (now.getTime() - coverageStart.getTime()) / (1000 * 60)))
+    : 0;
+  const coverage: LightningMonitoringCoverage = {
+    monitoringSince: coverageStart,
+    coverageMinutes,
+    isComplete: coverageMinutes >= timeWindow
+  };
+
+  if (!coverage.isComplete && safety.level === 'safe') {
+    safety.message =
+      'No lightning strikes observed during the limited monitoring period. ' +
+      'This does NOT confirm the absence of lightning activity.';
+    safety.recommendations.unshift(
+      `Live monitoring of this area covers only ${coverageMinutes.toFixed(1)} of the requested ` +
+      `${timeWindow} minutes — treat this result as inconclusive and re-check shortly.`
+    );
+  }
+
+  return {
+    location: { latitude, longitude },
+    searchRadius: radius,
+    timeWindow,
+    searchPeriod: {
+      start: searchStart,
+      end: now
+    },
+    strikes,
+    statistics,
+    safety,
+    coverage,
+    source: 'Blitzortung.org',
+    generatedAt: now,
+    disclaimer: 'Lightning data from Blitzortung.org community network. Data may have 5-15 minute delay. For life-safety decisions, consult official weather services and local emergency management. When thunder roars, go indoors!'
+  };
+}
+
+/**
+ * Format lightning activity response for display
+ */
+export function formatLightningActivityResponse(
+  response: LightningActivityResponse,
+  detail: DetailLevel = 'standard'
+): string {
+  const lines: string[] = [];
+
+  lines.push('# ⚡ Lightning Activity Report');
+  lines.push('');
+  lines.push(`**Location:** ${response.location.latitude.toFixed(4)}, ${response.location.longitude.toFixed(4)}`);
+  lines.push(`**Search Radius:** ${response.searchRadius} km`);
+  lines.push(`**Time Window:** ${response.timeWindow} minutes (${response.searchPeriod.start.toISOString()} to ${response.searchPeriod.end.toISOString()})`);
+  lines.push('');
+
+  // Safety assessment
+  const safetyIcon = {
+    safe: '🟢',
+    elevated: '🟡',
+    high: '🟠',
+    extreme: '🔴'
+  }[response.safety.level];
+
+  const limitedData = !response.coverage.isComplete;
+  const statusSuffix = limitedData && response.safety.level === 'safe' ? ' (LIMITED DATA)' : '';
+  lines.push(`## ${safetyIcon} Safety Status: ${response.safety.level.toUpperCase()}${statusSuffix}`);
+  lines.push('');
+  lines.push(response.safety.message);
+  lines.push('');
+
+  if (limitedData) {
+    const since = response.coverage.monitoringSince
+      ? ` (since ${response.coverage.monitoringSince.toISOString()})`
+      : '';
+    lines.push(
+      `⚠️ **Limited monitoring coverage:** Live strike collection for this area spans ` +
+      `${response.coverage.coverageMinutes.toFixed(1)} of the requested ${response.timeWindow} minutes${since}. ` +
+      `An absence of strikes in this report does not confirm an absence of lightning. ` +
+      `Re-check in a few minutes or consult official weather services before making safety decisions.`
+    );
+    lines.push('');
+    // Explain WHY coverage is limited so a fresh/near-zero reading is not mistaken for
+    // verified calm — this is expected on a first query, not an error.
+    lines.push(
+      '*Why: lightning is monitored via a live feed that only begins buffering strikes once ' +
+      'an area is first queried, so a location’s first lookup starts near zero coverage and ' +
+      'builds over the following minutes. Saved locations are pre-warmed at startup. Historical ' +
+      'strikes cannot be backfilled.*'
+    );
+    lines.push('');
+  }
+
+  // Recommendations
+  if (response.safety.recommendations.length > 0) {
+    lines.push('### Safety Recommendations');
+    lines.push('');
+    response.safety.recommendations.forEach(rec => {
+      lines.push(`- ${rec}`);
+    });
+    lines.push('');
+  }
+
+  // Statistics
+  lines.push('## 📊 Lightning Statistics');
+  lines.push('');
+  lines.push(`**Total Strikes:** ${response.statistics.totalStrikes}`);
+  lines.push(
+    `**Monitoring Coverage:** ${response.coverage.coverageMinutes.toFixed(1)} of ${response.timeWindow} minutes` +
+    (response.coverage.isComplete ? '' : ' ⚠️')
+  );
+
+  if (response.statistics.totalStrikes > 0) {
+    lines.push(`**Cloud-to-Ground:** ${response.statistics.cloudToGroundStrikes}`);
+    lines.push(`**Intra-Cloud:** ${response.statistics.intraCloudStrikes}`);
+    lines.push(`**Nearest Strike:** ${response.statistics.nearestDistance.toFixed(1)} km away`);
+    lines.push(`**Average Distance:** ${response.statistics.averageDistance.toFixed(1)} km`);
+    lines.push(`**Strike Rate:** ${response.statistics.strikesPerMinute.toFixed(2)} strikes/minute`);
+    lines.push(`**Density:** ${response.statistics.densityPerSqKm.toFixed(4)} strikes/km²`);
+    lines.push(`**Active Thunderstorm:** ${response.safety.isActiveThunderstorm ? 'Yes' : 'No'}`);
+    lines.push('');
+
+    // Recent strikes. detail="full" lifts the cap to 25 (still capped, not
+    // unbounded — see D2 in docs/output-completeness-plan.md); the remainder
+    // note stays accurate at every level, including full. Statistics above are
+    // computed over ALL strikes regardless of detail level — unaffected here.
+    lines.push('## 🌩️ Recent Strikes');
+    lines.push('');
+    const maxStrikesToShow = detail === 'full' ? 25 : 10;
+    const strikesToShow = response.strikes.slice(0, maxStrikesToShow);
+
+    strikesToShow.forEach((strike, index) => {
+      const ageMinutes = (response.generatedAt.getTime() - strike.timestamp.getTime()) / (1000 * 60);
+      const polaritySymbol = strike.polarity > 0 ? '+' : '−';
+      lines.push(`### Strike ${index + 1}`);
+      lines.push(`- **Distance:** ${strike.distance?.toFixed(1)} km`);
+      lines.push(`- **Time:** ${strike.timestamp.toISOString()} (${ageMinutes.toFixed(1)} minutes ago)`);
+      lines.push(`- **Location:** ${strike.latitude.toFixed(4)}, ${strike.longitude.toFixed(4)}`);
+      lines.push(`- **Polarity:** ${polaritySymbol} (${strike.polarity > 0 ? 'Positive' : 'Negative'})`);
+      lines.push(`- **Amplitude:** ${strike.amplitude.toFixed(1)} kA`);
+      if (strike.stationCount) {
+        lines.push(`- **Detected by:** ${strike.stationCount} stations`);
+      }
+      lines.push('');
+    });
+
+    if (response.strikes.length > maxStrikesToShow) {
+      if (detail === 'full') {
+        lines.push(`*Showing ${maxStrikesToShow} of ${response.strikes.length} strikes detected*`);
+      } else {
+        lines.push(`*Showing ${maxStrikesToShow} of ${response.strikes.length} strikes detected — use detail="full" for more*`);
+      }
+      lines.push('');
+    }
+  } else {
+    lines.push('');
+    lines.push('No lightning strikes detected in the search area during the time window.');
+    lines.push('');
+  }
+
+  // Disclaimer
+  if (response.disclaimer) {
+    lines.push('---');
+    lines.push('');
+    lines.push(`⚠️ **DISCLAIMER:** ${response.disclaimer}`);
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push(`*Generated: ${response.generatedAt.toISOString()}*`);
+  lines.push(`*Data source: ${response.source}*`);
+
+  return lines.join('\n');
+}

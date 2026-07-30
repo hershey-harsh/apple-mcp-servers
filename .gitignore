@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Build output (rebuilt by each server's start.sh on launch)
+dist/
+build/
+*.tsbuildinfo
+
+# Compiled native binaries (rebuilt on launch)
+apple-events/bin/EventKitCLI
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+coverage/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+
+# Local Claude Code state
+.claude/

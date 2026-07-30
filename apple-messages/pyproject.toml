@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apple-messages-mcp"
+version = "1.0.0"
+description = "A bridge for interacting with macOS Messages app through MCP"
+readme = {file = "README.md", content-type = "text/markdown"}
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Harsh", email = "social@mannava.org"}
+]
+keywords = ["macos", "messages", "imessage", "mcp"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: MacOS :: MacOS X",
+    "Topic :: Communications :: Chat",
+]
+dependencies = [
+    "mcp[cli]>=1.2.0,<2.0.0", # For FastMCP functionality with CLI support
+    "thefuzz>=0.20.0",
+    "python-Levenshtein>=0.23.0", # Optional but recommended for performance
+    "pillow>=10.0.0", # Image format handling for tool_get_attachment
+    "pillow-heif>=0.13.0", # HEIC support so iPhone photos can be returned inline
+]
+
+[project.urls]
+"Homepage" = "https://github.com/hershey-harsh/apple-mcp-servers"
+"Bug Tracker" = "https://github.com/hershey-harsh/apple-mcp-servers/issues"
+"Source" = "https://github.com/hershey-harsh/apple-mcp-servers"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.10.0",
+    "mypy>=1.0.0",
+]
+
+# Define both entry points to ensure it works with either name
+[project.scripts]
+mac-messages-mcp = "mac_messages_mcp.server:run_server"
+mac_messages_mcp = "mac_messages_mcp.server:run_server"
+
+[tool.setuptools]
+packages = ["mac_messages_mcp"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]

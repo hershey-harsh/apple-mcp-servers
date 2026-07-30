@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apple-mail-mcp"
+version = "3.2.0"
+description = "MCP server giving AI assistants full access to Apple Mail - read, search, compose, organize & analyze emails"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Harsh", email = "social@mannava.org" },
+]
+keywords = [
+    "mcp",
+    "mcp-server",
+    "apple-mail",
+    "email",
+    "ai",
+    "claude",
+    "automation",
+    "macos",
+    "applescript",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+]
+dependencies = [
+    "fastmcp>=3.1.0",
+]
+
+[project.scripts]
+mcp-apple-mail = "apple_mail_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hershey-harsh/apple-mcp-servers"
+Repository = "https://github.com/hershey-harsh/apple-mcp-servers"
+Issues = "https://github.com/hershey-harsh/apple-mcp-servers/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["plugin/apple_mail_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["plugin/apple_mail_mcp/**"]
