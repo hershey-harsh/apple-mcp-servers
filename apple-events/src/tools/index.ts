@@ -44,6 +44,7 @@ import {
   handleReadSubtasks,
   handleReorderSubtasks,
   handleFreeSlots,
+  handleHops,
   handleScheduleStudyBlocks,
   handleToggleSubtask,
   handleUpdateCalendar,
@@ -170,6 +171,7 @@ const TOOL_ROUTER_MAP = {
       agenda: (scheduleArgs) => handleAgenda(scheduleArgs),
       'free-slots': (scheduleArgs) => handleFreeSlots(scheduleArgs),
       conflicts: (scheduleArgs) => handleConflicts(scheduleArgs),
+      hops: (scheduleArgs) => handleHops(scheduleArgs),
     },
     // Asking for "my schedule" with no action should show the agenda.
     'agenda',

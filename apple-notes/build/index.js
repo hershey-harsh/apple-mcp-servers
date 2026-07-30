@@ -39001,8 +39001,8 @@ function embeddedMessage(field) {
 }
 
 // src/utils/docsUrls.ts
-var FULL_DISK_ACCESS_GUIDE_URL = "https://github.com/hershey-harsh/apple-mcp-servers#readme";
-var NODE_RUNTIME_TCC_GUIDE_URL = "https://github.com/hershey-harsh/apple-mcp-servers#readme";
+var FULL_DISK_ACCESS_GUIDE_URL = "https://github.com/hershey-harsh/apple-mcp-servers#full-disk-access";
+var NODE_RUNTIME_TCC_GUIDE_URL = "https://github.com/hershey-harsh/apple-mcp-servers#node-runtime-and-tcc-permissions";
 
 // src/utils/checklistParser.ts
 var CHECKLIST_STYLE_TYPE = 103;
@@ -39174,10 +39174,16 @@ function allowedSaveRoots() {
 function ensureParentDir(abs) {
   mkdirSync(dirname(abs), { recursive: true });
 }
+function expandHome(p) {
+  if (p === "~") return homedir2();
+  if (p.startsWith("~/")) return resolve(homedir2(), p.slice(2));
+  return p;
+}
 function assertSafeSavePath(p, roots = allowedSaveRoots()) {
   if (!p || !p.trim()) throw new Error("A destination path is required.");
-  if (!isAbsolute(p)) throw new Error(`Destination path must be absolute: "${p}"`);
-  const abs = resolve(p);
+  const expanded = expandHome(p.trim());
+  if (!isAbsolute(expanded)) throw new Error(`Destination path must be absolute: "${p}"`);
+  const abs = resolve(expanded);
   const ok = roots.some((r) => abs === r || abs.startsWith(r.endsWith(sep) ? r : r + sep));
   if (!ok) {
     throw new Error(`Refusing to write outside allowed locations (home, temp, /Volumes): "${abs}"`);
@@ -41381,12 +41387,12 @@ var AppleNotesManager = class {
   /**
    * Export structure for a single note.
    */
-  exportNote(note, content) {
+  exportNote(note, content, body = "both") {
     return {
       id: note.id,
       title: note.title,
-      content,
-      plaintext: this.htmlToPlaintext(content),
+      ...body === "html" || body === "both" ? { content } : {},
+      ...body === "plaintext" || body === "both" ? { plaintext: this.htmlToPlaintext(content) } : {},
       folder: note.folder || "Notes",
       account: note.account || "iCloud",
       created: note.created.toISOString(),
@@ -41425,40 +41431,53 @@ var AppleNotesManager = class {
    * fs.writeFileSync('notes-backup.json', JSON.stringify(snapshot, null, 2));
    * ```
    */
-  exportNotesAsJson() {
-    const accounts = this.listAccounts();
+  exportNotesAsJson(options = {}) {
+    const { account: onlyAccount, folder: onlyFolder, body = "plaintext", limit } = options;
+    const accounts = this.listAccounts().filter(
+      (a) => !onlyAccount || a.name.toLowerCase() === onlyAccount.toLowerCase()
+    );
     const exportData = {
       exportDate: (/* @__PURE__ */ new Date()).toISOString(),
       version: "1.0",
       accounts: [],
       summary: { totalNotes: 0, totalFolders: 0, totalAccounts: accounts.length }
     };
+    const wantsBody = body !== "none";
+    const reachedLimit = () => limit !== void 0 && exportData.summary.totalNotes >= limit;
     for (const account of accounts) {
-      const folders = this.listFolders(account.name);
+      const folders = this.listFolders(account.name).filter(
+        (f) => !onlyFolder || f.name.toLowerCase() === onlyFolder.toLowerCase()
+      );
       const accountData = {
         name: account.name,
         folders: []
       };
       for (const folder of folders) {
+        if (reachedLimit()) break;
         const folderData = {
           name: folder.name,
           notes: []
         };
         const noteTitles = this.listNotes(account.name, folder.name);
         for (const title of noteTitles) {
+          if (reachedLimit()) break;
           const note = this.getNoteDetails(title, account.name);
           if (!note) continue;
           let content = "";
-          if (!note.passwordProtected) {
+          if (wantsBody && !note.passwordProtected) {
             content = this.getNoteContent(title, account.name);
           }
-          folderData.notes.push(this.exportNote(note, content));
+          folderData.notes.push(this.exportNote(note, content, body));
           exportData.summary.totalNotes++;
         }
         accountData.folders.push(folderData);
         exportData.summary.totalFolders++;
       }
       exportData.accounts.push(accountData);
+      if (reachedLimit()) break;
+    }
+    if (reachedLimit()) {
+      exportData.summary.truncated = true;
     }
     return exportData;
   }
@@ -41885,11 +41904,12 @@ function resolveUpdateResponseTitle(currentTitle, newTitle, format, newContent) 
 
 // src/utils/searchLimit.ts
 var DEFAULT_SEARCH_LIMIT = 50;
-function resolveSearchLimit(limit) {
+var DEFAULT_LIST_LIMIT = 200;
+function resolveSearchLimit(limit, fallback = DEFAULT_SEARCH_LIMIT) {
   if (limit !== void 0 && Number.isFinite(limit) && limit > 0) {
     return Math.floor(limit);
   }
-  return DEFAULT_SEARCH_LIMIT;
+  return fallback;
 }
 function describeSearchLimit(effectiveLimit, wasDefault, resultCount) {
   const info = ` (limit: ${effectiveLimit}${wasDefault ? ", default" : ""})`;
@@ -41898,6 +41918,9 @@ function describeSearchLimit(effectiveLimit, wasDefault, resultCount) {
 \u2139\uFE0F Showing the first ${effectiveLimit}${wasDefault ? " (default limit)" : ""}; there may be more. Narrow the query, filter with \`folder\`/\`modifiedSince\`, or pass a higher \`limit\` to see additional matches.` : "";
   return { info, truncationNote };
 }
+
+// src/index.ts
+import { writeFileSync, statSync as statSync3 } from "fs";
 
 // src/tools/doctor.ts
 import { spawnSync } from "child_process";
@@ -42887,7 +42910,7 @@ server.registerTool(
       modifiedSince: external_exports.string().max(64).optional().describe(
         "ISO 8601 date string to filter notes modified on or after this date (e.g., '2025-01-01'). Useful for listing only recent notes in large collections."
       ),
-      limit: external_exports.number().int().positive().optional().describe("Maximum number of notes to return")
+      limit: external_exports.number().int().positive().optional().describe(`Maximum number of notes to return (default ${DEFAULT_LIST_LIMIT})`)
     },
     outputSchema: {
       notes: external_exports.array(external_exports.string()).optional(),
@@ -42895,18 +42918,24 @@ server.registerTool(
     }
   },
   withErrorHandling(({ account, folder, modifiedSince, limit }) => {
+    const effectiveLimit = resolveSearchLimit(limit, DEFAULT_LIST_LIMIT);
+    const limitWasDefault = limit === void 0;
     const {
       result: notes,
       syncBefore,
       syncInterference
     } = withSyncAwarenessSync(
       "list-notes",
-      () => notesManager.listNotes(account, folder, modifiedSince, limit)
+      () => notesManager.listNotes(account, folder, modifiedSince, effectiveLimit)
     );
     const location = folder ? ` in folder "${folder}"` : "";
     const acct = account ? ` (${account})` : "";
     const dateInfo = modifiedSince ? ` modified since ${modifiedSince}` : "";
-    const limitInfo = limit ? ` (limit: ${limit})` : "";
+    const { info: limitInfo, truncationNote } = describeSearchLimit(
+      effectiveLimit,
+      limitWasDefault,
+      notes.length
+    );
     const syncWarnings = [];
     if (syncBefore.syncDetected) {
       syncWarnings.push(`\u26A0\uFE0F iCloud sync was active.`);
@@ -42926,7 +42955,7 @@ ${syncWarnings.join(" ")}` : "";
     const noteList = notes.map((t) => `  - ${t}`).join("\n");
     return successResponse(
       `Found ${notes.length} notes${location}${acct}${dateInfo}${limitInfo}:
-${noteList}${syncNote}`,
+${noteList}${truncationNote}${syncNote}`,
       { notes, count: notes.length }
     );
   }, "Error listing notes")
@@ -43459,34 +43488,63 @@ server.registerTool(
 server.registerTool(
   "export-notes-json",
   {
-    description: "Use when: exporting the entire notes library as structured JSON for backup or bulk processing.\nReturns: a summary plus the full JSON of all notes, folders, and accounts.\nDo not use when: you need a single note (get-note-content) \u2014 this reads everything and can be large.\nRead-only.",
-    inputSchema: {},
+    description: 'Use when: exporting notes as structured JSON for backup or bulk processing.\nReturns: a summary, plus the JSON itself \u2014 written to saveToPath when given, otherwise inlined.\nDo not use when: you need a single note (get-note-content).\nSize: an unscoped export of a real library is far larger than a chat can hold. Scope it with account/folder/limit, keep body at the default "plaintext", or pass saveToPath to write it to disk and get back only a summary.\nRead-only apart from writing saveToPath.',
+    inputSchema: {
+      account: external_exports.string().optional().describe("Only export this account."),
+      folder: external_exports.string().optional().describe("Only export this folder."),
+      body: external_exports.enum(["none", "plaintext", "html", "both"]).optional().describe(
+        'How much of each note body to include. "none" is metadata only and much faster (it skips a per-note fetch); "both" duplicates every body as HTML and plaintext. Defaults to "plaintext".'
+      ),
+      limit: external_exports.number().int().positive().optional().describe("Stop after this many notes. Sets summary.truncated when it bites."),
+      saveToPath: external_exports.string().optional().describe(
+        "Write the JSON here (e.g. ~/Desktop/notes-backup.json) and return only a summary. The right choice for backups \u2014 it keeps the whole library out of the conversation."
+      )
+    },
     outputSchema: {
       exportDate: external_exports.string().optional(),
       version: external_exports.string().optional(),
       accounts: external_exports.array(external_exports.object({}).passthrough()).optional(),
-      summary: external_exports.object({}).passthrough().optional()
+      summary: external_exports.object({}).passthrough().optional(),
+      savedTo: external_exports.string().optional()
     }
   },
-  withErrorHandling(() => {
-    const exportData = notesManager.exportNotesAsJson();
-    const { summary } = exportData;
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Exported ${summary.totalNotes} notes from ${summary.totalFolders} folders across ${summary.totalAccounts} account(s).
+  withErrorHandling(
+    ({ account, folder, body, limit, saveToPath }) => {
+      const exportData = notesManager.exportNotesAsJson({ account, folder, body, limit });
+      const { summary } = exportData;
+      const scope = [
+        account ? `account "${account}"` : null,
+        folder ? `folder "${folder}"` : null
+      ].filter(Boolean).join(", ");
+      const header = `Exported ${summary.totalNotes} notes from ${summary.totalFolders} folders across ${summary.totalAccounts} account(s)${scope ? ` (${scope})` : ""}.` + (summary.truncated ? ` Stopped at the limit of ${limit} \u2014 more notes remain.` : "");
+      if (saveToPath) {
+        const target = assertSafeSavePath(saveToPath);
+        ensureParentDir(target);
+        writeFileSync(target, JSON.stringify(exportData), "utf8");
+        const bytes = statSync3(target).size;
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${header}
+Wrote ${bytes.toLocaleString()} bytes to ${target}`
+            }
+          ],
+          structuredContent: { ...exportData, accounts: [], savedTo: target }
+        };
+      }
+      return {
+        content: [
+          { type: "text", text: `${header}
 
-Full JSON export:`
-        },
-        {
-          type: "text",
-          text: JSON.stringify(exportData, null, 2)
-        }
-      ],
-      structuredContent: { ...exportData }
-    };
-  }, "Error exporting notes")
+Full JSON export:` },
+          { type: "text", text: JSON.stringify(exportData) }
+        ],
+        structuredContent: { ...exportData }
+      };
+    },
+    "Error exporting notes"
+  )
 );
 server.registerTool(
   "get-note-markdown",
@@ -43556,6 +43614,75 @@ ${summary}`,
       { items: result.items, checked, total: result.items.length }
     );
   }, "Error reading checklist state")
+);
+server.registerTool(
+  "checklist-to-reminders",
+  {
+    description: 'Use when: turning a note\'s checklist into tasks \u2014 lecture-notes to-dos, a revision list, a packing list.\nReturns: the unchecked items as a ready-to-send `reminders` array for the Apple Events MCP `reminders_batch` tool (action "create"), plus a readable summary.\nDo not use when: you just want to read checkbox state (get-checklist-state).\nThis tool creates nothing on its own \u2014 it only reshapes. Pass the JSON to reminders_batch to actually create the reminders.\nNote: requires Full Disk Access; reads the NoteStore database directly.',
+    inputSchema: {
+      id: external_exports.string().min(1, "Note ID is required. Use search-notes to find the note ID first.").max(MAX.ID),
+      includeCompleted: external_exports.boolean().optional().describe(
+        "Include items already ticked off. Defaults to false \u2014 a done checkbox is not a task."
+      ),
+      targetList: external_exports.string().max(MAX.FOLDER).optional().describe('Reminders list to file them under, e.g. "College".'),
+      dueDate: external_exports.string().max(MAX.QUERY).optional().describe(
+        'Due date applied to every item. Passed through verbatim \u2014 apple-events parses plain language such as "friday 5pm".'
+      )
+    },
+    outputSchema: {
+      reminders: external_exports.array(external_exports.object({}).passthrough()).optional(),
+      count: external_exports.number().optional(),
+      skipped: external_exports.number().optional()
+    }
+  },
+  withErrorHandling(({ id, includeCompleted = false, targetList, dueDate }) => {
+    const note = notesManager.getNoteById(id);
+    if (!note) {
+      return errorResponse(`Note with ID "${id}" not found`);
+    }
+    if (note.passwordProtected) {
+      return errorResponse(
+        `Note "${note.title}" is password-protected and cannot be read. Unlock it in Notes.app first.`
+      );
+    }
+    const result = getChecklistItems(id);
+    if (!result.items) {
+      return errorResponse(result.message || "Failed to read checklist state.");
+    }
+    if (result.items.length === 0) {
+      return errorResponse(
+        `Note "${note.title}" has no checklist items. Add checkboxes in Notes.app, or use create-note with format:"checklist".`
+      );
+    }
+    const wanted = includeCompleted ? result.items : result.items.filter((i) => !i.done);
+    const skipped = result.items.length - wanted.length;
+    if (wanted.length === 0) {
+      return errorResponse(
+        `All ${result.items.length} checklist items in "${note.title}" are already done. Pass includeCompleted:true to convert them anyway.`
+      );
+    }
+    const reminders = wanted.map((item) => ({
+      title: item.text,
+      note: `From note: ${note.title}`,
+      ...dueDate ? { dueDate } : {},
+      ...targetList ? { targetList } : {},
+      ...includeCompleted && item.done ? { completed: true } : {}
+    }));
+    const summary = `${reminders.length} reminder(s) from "${note.title}"` + (skipped > 0 ? `, skipping ${skipped} already done` : "") + ".";
+    return successResponse(
+      `${summary}
+
+Send this to the Apple Events MCP \`reminders_batch\` with action "create":
+\`\`\`json
+${JSON.stringify(
+        { action: "create", reminders },
+        null,
+        2
+      )}
+\`\`\``,
+      { reminders, count: reminders.length, skipped }
+    );
+  }, "Error converting checklist to reminders")
 );
 server.registerTool(
   "get-note-metadata",

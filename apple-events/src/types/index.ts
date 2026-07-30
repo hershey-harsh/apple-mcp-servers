@@ -379,12 +379,13 @@ export interface CalendarsToolArgs extends BaseToolArgs {
 /**
  * Read-only planning actions over the existing calendar/reminder data.
  */
-export type ScheduleAction = 'agenda' | 'free-slots' | 'conflicts';
+export type ScheduleAction = 'agenda' | 'free-slots' | 'conflicts' | 'hops';
 
 export const SCHEDULE_ACTIONS: readonly ScheduleAction[] = [
   'agenda',
   'free-slots',
   'conflicts',
+  'hops',
 ] as const;
 
 /**

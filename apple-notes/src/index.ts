@@ -32,7 +32,13 @@ import { detectChecklistAttempt } from "@/utils/contentWarnings.js";
 import { parseHashtags } from "@/utils/hashtags.js";
 import { stripLargeInlineImages, strippedImagesWarning } from "@/utils/inlineImages.js";
 import { resolveUpdateResponseTitle } from "@/utils/updateResponseTitle.js";
-import { resolveSearchLimit, describeSearchLimit } from "@/utils/searchLimit.js";
+import {
+  resolveSearchLimit,
+  describeSearchLimit,
+  DEFAULT_LIST_LIMIT,
+} from "@/utils/searchLimit.js";
+import { assertSafeSavePath, ensureParentDir } from "@/utils/attachmentFs.js";
+import { writeFileSync, statSync } from "fs";
 import { runDoctor, formatDoctorReport } from "@/tools/doctor.js";
 import { FULL_DISK_ACCESS_GUIDE_URL } from "@/utils/docsUrls.js";
 import { loadFileConfig } from "@/services/fileConfig.js";
@@ -1244,7 +1250,12 @@ server.registerTool(
         .describe(
           "ISO 8601 date string to filter notes modified on or after this date (e.g., '2025-01-01'). Useful for listing only recent notes in large collections."
         ),
-      limit: z.number().int().positive().optional().describe("Maximum number of notes to return"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(`Maximum number of notes to return (default ${DEFAULT_LIST_LIMIT})`),
     },
     outputSchema: {
       notes: z.array(z.string()).optional(),
@@ -1252,20 +1263,30 @@ server.registerTool(
     },
   },
   withErrorHandling(({ account, folder, modifiedSince, limit }) => {
+    // Bound the listing by default. Titles are cheap individually, but a whole
+    // library's worth of them is thousands of response lines; the applied cap is
+    // disclosed below so the truncation is visible rather than silent.
+    const effectiveLimit = resolveSearchLimit(limit, DEFAULT_LIST_LIMIT);
+    const limitWasDefault = limit === undefined;
+
     // Use sync-aware wrapper for this read operation
     const {
       result: notes,
       syncBefore,
       syncInterference,
     } = withSyncAwarenessSync("list-notes", () =>
-      notesManager.listNotes(account, folder, modifiedSince, limit)
+      notesManager.listNotes(account, folder, modifiedSince, effectiveLimit)
     );
 
     // Build context string for the response
     const location = folder ? ` in folder "${folder}"` : "";
     const acct = account ? ` (${account})` : "";
     const dateInfo = modifiedSince ? ` modified since ${modifiedSince}` : "";
-    const limitInfo = limit ? ` (limit: ${limit})` : "";
+    const { info: limitInfo, truncationNote } = describeSearchLimit(
+      effectiveLimit,
+      limitWasDefault,
+      notes.length
+    );
 
     // Build sync warning if needed
     const syncWarnings: string[] = [];
@@ -1286,7 +1307,7 @@ server.registerTool(
 
     const noteList = notes.map((t) => `  - ${t}`).join("\n");
     return successResponse(
-      `Found ${notes.length} notes${location}${acct}${dateInfo}${limitInfo}:\n${noteList}${syncNote}`,
+      `Found ${notes.length} notes${location}${acct}${dateInfo}${limitInfo}:\n${noteList}${truncationNote}${syncNote}`,
       { notes, count: notes.length }
     );
   }, "Error listing notes")
@@ -2015,33 +2036,78 @@ server.registerTool(
   "export-notes-json",
   {
     description:
-      "Use when: exporting the entire notes library as structured JSON for backup or bulk processing.\nReturns: a summary plus the full JSON of all notes, folders, and accounts.\nDo not use when: you need a single note (get-note-content) — this reads everything and can be large.\nRead-only.",
-    inputSchema: {},
+      "Use when: exporting notes as structured JSON for backup or bulk processing.\nReturns: a summary, plus the JSON itself — written to saveToPath when given, otherwise inlined.\nDo not use when: you need a single note (get-note-content).\nSize: an unscoped export of a real library is far larger than a chat can hold. Scope it with account/folder/limit, keep body at the default \"plaintext\", or pass saveToPath to write it to disk and get back only a summary.\nRead-only apart from writing saveToPath.",
+    inputSchema: {
+      account: z.string().optional().describe("Only export this account."),
+      folder: z.string().optional().describe("Only export this folder."),
+      body: z
+        .enum(["none", "plaintext", "html", "both"])
+        .optional()
+        .describe(
+          'How much of each note body to include. "none" is metadata only and much faster (it skips a per-note fetch); "both" duplicates every body as HTML and plaintext. Defaults to "plaintext".',
+        ),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Stop after this many notes. Sets summary.truncated when it bites."),
+      saveToPath: z
+        .string()
+        .optional()
+        .describe(
+          "Write the JSON here (e.g. ~/Desktop/notes-backup.json) and return only a summary. The right choice for backups — it keeps the whole library out of the conversation.",
+        ),
+    },
     outputSchema: {
       exportDate: z.string().optional(),
       version: z.string().optional(),
       accounts: z.array(z.object({}).passthrough()).optional(),
       summary: z.object({}).passthrough().optional(),
+      savedTo: z.string().optional(),
     },
   },
-  withErrorHandling(() => {
-    const exportData = notesManager.exportNotesAsJson();
-    const { summary } = exportData;
+  withErrorHandling(
+    ({ account, folder, body, limit, saveToPath }) => {
+      const exportData = notesManager.exportNotesAsJson({ account, folder, body, limit });
+      const { summary } = exportData;
+      const scope = [
+        account ? `account "${account}"` : null,
+        folder ? `folder "${folder}"` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const header =
+        `Exported ${summary.totalNotes} notes from ${summary.totalFolders} folders ` +
+        `across ${summary.totalAccounts} account(s)${scope ? ` (${scope})` : ""}.` +
+        (summary.truncated ? ` Stopped at the limit of ${limit} — more notes remain.` : "");
 
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Exported ${summary.totalNotes} notes from ${summary.totalFolders} folders across ${summary.totalAccounts} account(s).\n\nFull JSON export:`,
-        },
-        {
-          type: "text" as const,
-          text: JSON.stringify(exportData, null, 2),
-        },
-      ],
-      structuredContent: { ...exportData },
-    };
-  }, "Error exporting notes")
+      if (saveToPath) {
+        const target = assertSafeSavePath(saveToPath);
+        ensureParentDir(target);
+        writeFileSync(target, JSON.stringify(exportData), "utf8");
+        const bytes = statSync(target).size;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${header}\nWrote ${bytes.toLocaleString()} bytes to ${target}`,
+            },
+          ],
+          structuredContent: { ...exportData, accounts: [], savedTo: target },
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: `${header}\n\nFull JSON export:` },
+          { type: "text" as const, text: JSON.stringify(exportData) },
+        ],
+        structuredContent: { ...exportData },
+      };
+    },
+    "Error exporting notes",
+  )
 );
 
 // --- get-note-markdown ---
@@ -2144,6 +2210,100 @@ server.registerTool(
       { items: result.items, checked, total: result.items.length }
     );
   }, "Error reading checklist state")
+);
+
+// --- checklist-to-reminders ---
+
+server.registerTool(
+  "checklist-to-reminders",
+  {
+    description:
+      "Use when: turning a note's checklist into tasks — lecture-notes to-dos, a revision list, a packing list.\nReturns: the unchecked items as a ready-to-send `reminders` array for the Apple Events MCP `reminders_batch` tool (action \"create\"), plus a readable summary.\nDo not use when: you just want to read checkbox state (get-checklist-state).\nThis tool creates nothing on its own — it only reshapes. Pass the JSON to reminders_batch to actually create the reminders.\nNote: requires Full Disk Access; reads the NoteStore database directly.",
+    inputSchema: {
+      id: z
+        .string()
+        .min(1, "Note ID is required. Use search-notes to find the note ID first.")
+        .max(MAX.ID),
+      includeCompleted: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include items already ticked off. Defaults to false — a done checkbox is not a task.",
+        ),
+      targetList: z
+        .string()
+        .max(MAX.FOLDER)
+        .optional()
+        .describe("Reminders list to file them under, e.g. \"College\"."),
+      dueDate: z
+        .string()
+        .max(MAX.QUERY)
+        .optional()
+        .describe(
+          "Due date applied to every item. Passed through verbatim — apple-events parses plain language such as \"friday 5pm\".",
+        ),
+    },
+    outputSchema: {
+      reminders: z.array(z.object({}).passthrough()).optional(),
+      count: z.number().optional(),
+      skipped: z.number().optional(),
+    },
+  },
+  withErrorHandling(({ id, includeCompleted = false, targetList, dueDate }) => {
+    const note = notesManager.getNoteById(id);
+    if (!note) {
+      return errorResponse(`Note with ID "${id}" not found`);
+    }
+    if (note.passwordProtected) {
+      return errorResponse(
+        `Note "${note.title}" is password-protected and cannot be read. Unlock it in Notes.app first.`
+      );
+    }
+
+    const result = getChecklistItems(id);
+    if (!result.items) {
+      return errorResponse(result.message || "Failed to read checklist state.");
+    }
+    if (result.items.length === 0) {
+      return errorResponse(
+        `Note "${note.title}" has no checklist items. Add checkboxes in Notes.app, or use create-note with format:"checklist".`
+      );
+    }
+
+    const wanted = includeCompleted ? result.items : result.items.filter((i) => !i.done);
+    const skipped = result.items.length - wanted.length;
+
+    if (wanted.length === 0) {
+      return errorResponse(
+        `All ${result.items.length} checklist items in "${note.title}" are already done. Pass includeCompleted:true to convert them anyway.`
+      );
+    }
+
+    // Field names match reminders_batch's item schema so this array is usable
+    // verbatim; `note` back-references the source so a created reminder can be
+    // traced to the note it came from.
+    const reminders = wanted.map((item) => ({
+      title: item.text,
+      note: `From note: ${note.title}`,
+      ...(dueDate ? { dueDate } : {}),
+      ...(targetList ? { targetList } : {}),
+      ...(includeCompleted && item.done ? { completed: true } : {}),
+    }));
+
+    const summary =
+      `${reminders.length} reminder(s) from "${note.title}"` +
+      (skipped > 0 ? `, skipping ${skipped} already done` : "") +
+      ".";
+
+    return successResponse(
+      `${summary}\n\nSend this to the Apple Events MCP \`reminders_batch\` with action "create":\n\`\`\`json\n${JSON.stringify(
+        { action: "create", reminders },
+        null,
+        2
+      )}\n\`\`\``,
+      { reminders, count: reminders.length, skipped }
+    );
+  }, "Error converting checklist to reminders")
 );
 
 // --- get-note-metadata (BETA) ---

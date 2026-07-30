@@ -449,6 +449,17 @@ def tool_fuzzy_search_messages(
             le=1.0,
         ),
     ] = 0.6,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of matches to return, highest-scoring first. "
+                "Default is 50. A loose term over a wide window can match "
+                "thousands of messages; this bounds the reply, not the search."
+            ),
+            ge=1,
+        ),
+    ] = 50,
 ) -> str:
     """
     Fuzzy-search local message text within a time window.
@@ -470,7 +481,7 @@ def tool_fuzzy_search_messages(
     )
     try:
         result = fuzzy_search_messages(
-            search_term=search_term, hours=hours, threshold=threshold
+            search_term=search_term, hours=hours, threshold=threshold, limit=limit
         )
         return result
     except Exception as e:

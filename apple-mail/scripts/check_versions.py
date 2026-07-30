@@ -20,10 +20,15 @@ def get_versions(repo_root: Path) -> dict[str, str]:
     """Return a mapping of {source_label: version_string} for every tracked file."""
     versions: dict[str, str] = {}
 
-    # 1. apple-mail-mcpb/manifest.json  (single source of truth for the build script)
+    # 1. apple-mail-mcpb/manifest.json — the .mcpb bundle manifest.
+    # Optional: this repo does not ship the .mcpb packaging folder, and a check
+    # that hard-fails on an absent optional artifact is a permanently red test
+    # rather than a signal. When the folder is present its version must still
+    # agree with everything else.
     manifest_path = repo_root / "apple-mail-mcpb" / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    versions["apple-mail-mcpb/manifest.json"] = manifest["version"]
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        versions["apple-mail-mcpb/manifest.json"] = manifest["version"]
 
     # 2. pyproject.toml
     pyproject_text = (repo_root / "pyproject.toml").read_text()
@@ -32,10 +37,17 @@ def get_versions(repo_root: Path) -> dict[str, str]:
         raise ValueError("Could not find version in pyproject.toml")
     versions["pyproject.toml"] = match.group(1)
 
-    # 3. server.json — two occurrences: top-level "version" and packages[0]["version"]
-    server = json.loads((repo_root / "server.json").read_text())
-    versions["server.json#version"] = server["version"]
-    versions["server.json#packages[0].version"] = server["packages"][0]["version"]
+    # 3. server.json — the MCP registry entry; two occurrences, top-level
+    # "version" and packages[0]["version"]. Optional for the same reason as the
+    # .mcpb manifest: this repo is not published to the registry, so the file is
+    # absent by design rather than by mistake.
+    server_path = repo_root / "server.json"
+    if server_path.is_file():
+        server = json.loads(server_path.read_text())
+        versions["server.json#version"] = server["version"]
+        packages = server.get("packages") or []
+        if packages:
+            versions["server.json#packages[0].version"] = packages[0]["version"]
 
     # 4. plugin/apple_mail_mcp/__init__.py  __version__
     init_text = (

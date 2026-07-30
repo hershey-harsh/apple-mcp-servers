@@ -8,7 +8,7 @@
  */
 
 export const FULL_DISK_ACCESS_GUIDE_URL =
-  "https://github.com/hershey-harsh/apple-mcp-servers#readme";
+  "https://github.com/hershey-harsh/apple-mcp-servers#full-disk-access";
 
 export const NODE_RUNTIME_TCC_GUIDE_URL =
-  "https://github.com/hershey-harsh/apple-mcp-servers#readme";
+  "https://github.com/hershey-harsh/apple-mcp-servers#node-runtime-and-tcc-permissions";

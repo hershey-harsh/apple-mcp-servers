@@ -49,7 +49,7 @@ def _parse_pipe_delimited_emails(raw: str) -> List[Dict[str, Any]]:
 @inject_preferences
 def list_inbox_emails(
     account: Optional[str] = None,
-    max_emails: int = 0,
+    max_emails: int = 25,
     include_read: bool = True,
     include_content: bool = False,
     output_format: str = "text",
@@ -62,7 +62,9 @@ def list_inbox_emails(
 
     Args:
         account: Optional account name to filter (e.g., "Gmail", "Work"). If None, shows all accounts.
-        max_emails: Maximum number of emails to return per account (0 = all)
+        max_emails: Maximum number of emails to return per account (default 25).
+            Pass 0 for no cap — on a busy inbox that returns thousands of rows, so
+            prefer raising the number over removing the limit.
         include_read: Whether to include read emails (default: True)
         include_content: Whether to include a content preview for each email (slower, default: False)
         output_format: "text" (default, human-readable) or "json" (structured list of email dicts)

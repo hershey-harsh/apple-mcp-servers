@@ -850,6 +850,21 @@ export const AgendaSchema = z.object({
   dayEnd: ClockTimeSchema.optional(),
 });
 
+/**
+ * Args for the `hops` action: which stretch of calendar to derive location
+ * changes from, so they can be handed to the Apple Maps server for a
+ * can-I-actually-make-this check.
+ */
+export const HopsSchema = z.object({
+  startDate: SafeDateSchema,
+  endDate: SafeDateSchema,
+  filterCalendar: SafeListNameSchema,
+  filterAccount: SafeListNameSchema,
+  search: SafeSearchSchema,
+  /** Only report hops whose gap is at or under this, i.e. the tight ones. */
+  maxGapMinutes: z.number().int().min(0).max(1440).optional().default(60),
+});
+
 export const FreeSlotsSchema = z.object({
   startDate: SafeDateSchema,
   endDate: SafeDateSchema,

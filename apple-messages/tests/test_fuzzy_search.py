@@ -227,3 +227,47 @@ class TestEscapeLike:
 
     def test_all_special_chars(self):
         assert _escape_like("a%b_c\\d") == "a\\%b\\_c\\\\d"
+
+
+# ---------------------------------------------------------------------------
+# Group F — Result cap
+# ---------------------------------------------------------------------------
+
+
+class TestResultLimit:
+    """The scan cap bounds rows examined; `limit` bounds rows returned."""
+
+    def test_default_limit_caps_rendered_results(self):
+        """200 matches must not all be rendered into one response."""
+        msgs = [_make_message(f"study group meeting {i}", days_ago=1) for i in range(200)]
+        result, _ = _mock_db_and_call(msgs, "study group meeting")
+        rendered = [ln for ln in result.splitlines() if ln.startswith("[")]
+        assert len(rendered) == 50, (
+            f"Expected the default limit of 50 rendered matches, got {len(rendered)}."
+        )
+
+    def test_truncation_is_disclosed_with_true_total(self):
+        """A truncated reply must state the real match count, not the shown count."""
+        msgs = [_make_message(f"study group meeting {i}", days_ago=1) for i in range(200)]
+        result, _ = _mock_db_and_call(msgs, "study group meeting")
+        assert "Found 200 messages" in result
+        assert "showing the 50 highest-scoring" in result
+
+    def test_explicit_limit_is_honoured(self):
+        msgs = [_make_message(f"study group meeting {i}", days_ago=1) for i in range(200)]
+        result, _ = _mock_db_and_call(msgs, "study group meeting", limit=5)
+        rendered = [ln for ln in result.splitlines() if ln.startswith("[")]
+        assert len(rendered) == 5
+
+    def test_no_truncation_notice_when_under_limit(self):
+        msgs = [_make_message(f"study group meeting {i}", days_ago=1) for i in range(3)]
+        result, _ = _mock_db_and_call(msgs, "study group meeting")
+        assert "highest-scoring" not in result
+        assert "Found 3 messages" in result
+
+    def test_results_kept_are_the_highest_scoring(self):
+        """Truncation must drop the worst matches, not an arbitrary slice."""
+        msgs = [_make_message("chemistry lab report", days_ago=1)]
+        msgs += [_make_message(f"chem lab {i}", days_ago=1) for i in range(80)]
+        result, _ = _mock_db_and_call(msgs, "chemistry lab report", limit=1)
+        assert "chemistry lab report" in result

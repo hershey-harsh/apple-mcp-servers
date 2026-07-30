@@ -38,13 +38,29 @@ export function ensureParentDir(abs: string): void {
 }
 
 /**
+ * Expand a leading `~` to the user's home directory.
+ *
+ * Callers write `~/Desktop/notes.json` far more naturally than the absolute
+ * spelling, and rejecting it as "not absolute" is a dead end for something we
+ * can simply resolve. Only a bare `~` or `~/` prefix is expanded — `~other`
+ * (another user's home) is left alone for the allowed-roots check to reject.
+ */
+export function expandHome(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return resolve(homedir(), p.slice(2));
+  return p;
+}
+
+/**
  * Validate a user-supplied destination path. Returns the resolved absolute path,
- * or throws if it is relative or escapes the allowed roots.
+ * or throws if it is relative or escapes the allowed roots. A leading `~` is
+ * expanded first.
  */
 export function assertSafeSavePath(p: string, roots: string[] = allowedSaveRoots()): string {
   if (!p || !p.trim()) throw new Error("A destination path is required.");
-  if (!isAbsolute(p)) throw new Error(`Destination path must be absolute: "${p}"`);
-  const abs = resolve(p);
+  const expanded = expandHome(p.trim());
+  if (!isAbsolute(expanded)) throw new Error(`Destination path must be absolute: "${p}"`);
+  const abs = resolve(expanded);
   const ok = roots.some((r) => abs === r || abs.startsWith(r.endsWith(sep) ? r : r + sep));
   if (!ok) {
     throw new Error(`Refusing to write outside allowed locations (home, temp, /Volumes): "${abs}"`);

@@ -1346,10 +1346,20 @@ def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Default number of fuzzy matches rendered into a response. The scan cap above
+# bounds how many rows are *examined*; this bounds how many are *returned*. They
+# are different problems: a loose term over a 30-day window can match thousands of
+# rows well under the scan cap, and formatting every one of them produces a reply
+# far larger than the conversation it was meant to inform. Matches are sorted by
+# score before this applies, so the truncation keeps the best hits.
+_FUZZY_SEARCH_RESULT_LIMIT = 50
+
+
 def fuzzy_search_messages(
     search_term: str,
     hours: int = 720,
     threshold: float = 0.6,  # Default threshold adjusted for thefuzz
+    limit: int = _FUZZY_SEARCH_RESULT_LIMIT,
 ) -> str:
     """
     Fuzzy search for messages containing the search_term within the last N hours.
@@ -1473,6 +1483,13 @@ def fuzzy_search_messages(
 
     truncated = len(raw_messages) >= _FUZZY_SEARCH_SOFT_CAP
 
+    # Keep the highest-scoring matches and drop the tail. Applied before the
+    # attachment bulk-fetch below so we don't do lookups for rows nobody will see.
+    total_matches = len(matched_messages_with_scores)
+    effective_limit = limit if limit and limit > 0 else _FUZZY_SEARCH_RESULT_LIMIT
+    matched_messages_with_scores = matched_messages_with_scores[:effective_limit]
+    results_truncated = total_matches > len(matched_messages_with_scores)
+
     chat_mapping = get_chat_mapping()
 
     # Bulk-fetch attachments for all matched message ROWIDs (Tier 1 progressive disclosure).
@@ -1513,10 +1530,17 @@ def fuzzy_search_messages(
             f"{message_prefix} {direction}: {original_body}{attachment_summary}"
         )
 
-    header = f"Found {len(matched_messages_with_scores)} messages matching '{search_term}':\n"
+    if results_truncated:
+        header = (
+            f"Found {total_matches} messages matching '{search_term}'; "
+            f"showing the {len(matched_messages_with_scores)} highest-scoring. "
+            "Raise `limit`, narrow `hours`, or raise `threshold` to see the rest.\n"
+        )
+    else:
+        header = f"Found {total_matches} messages matching '{search_term}':\n"
     if truncated:
         header += (
-            f"(Results capped at {_FUZZY_SEARCH_SOFT_CAP} messages — "
+            f"(Scan capped at {_FUZZY_SEARCH_SOFT_CAP} messages — "
             "try a shorter time window for more precise results.)\n"
         )
     return header + "\n".join(formatted_results)

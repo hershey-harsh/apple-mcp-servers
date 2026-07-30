@@ -30,7 +30,7 @@ describe('Tools Definitions', () => {
       {
         name: 'calendar_schedule',
         description: 'Read-only planning',
-        actions: ['agenda', 'free-slots', 'conflicts'],
+        actions: ['agenda', 'free-slots', 'conflicts', 'hops'],
       },
       {
         name: 'calendar_batch',

@@ -35,6 +35,32 @@ Point your MCP client at each server's `start.sh`. For Claude Desktop, add entri
 }
 ```
 
+### Where to put this repo
+
+**Do not keep it in `~/Documents`, `~/Desktop`, or `~/Downloads`.** Those three folders are guarded by their own TCC services, and that check is separate from Full Disk Access. When your MCP client spawns `bash start.sh`, the child process is judged against the folder service, which Full Disk Access on the parent app does *not* satisfy — every server then dies instantly with:
+
+```
+/bin/bash: /path/to/start.sh: Operation not permitted
+```
+
+Worse, once an app has Full Disk Access, System Settings → Privacy & Security → Files & Folders collapses its per-folder rows into a single greyed-out "Full Disk Access" line, so the Documents toggle can no longer be set at all. Anywhere else in your home directory works with no grant at all.
+
+Quick triage from `~/Library/Logs/Claude/mcp-server-*.log`: `Operation not permitted` (EPERM) is a privacy denial; `Permission denied` (EACCES) is an ordinary file mode.
+
+### Full Disk Access
+
+`apple-messages` reads the Messages database directly, and some `apple-notes` features (checklist state, note links) read the Notes database. Both need Full Disk Access granted to **the app that launches the server** — your MCP client, not the terminal you happen to be in, and not Node.
+
+Grant it in System Settings → Privacy & Security → Full Disk Access, then **fully quit and relaunch** the app; TCC only re-reads the grant at process start. Run the `doctor` tool in `apple-notes` to confirm.
+
+If your client ships a nested helper app, both may appear in the list under the same display name. The one you want is the one that spawns the servers.
+
+### Node runtime and TCC permissions
+
+macOS keys Automation and Full Disk Access grants to a binary's code signature. A Homebrew Node is **ad-hoc signed** (no Team ID), so its signature changes on every `brew upgrade` — and every upgrade silently revokes the grants, which shows up as permissions that "randomly stop working."
+
+Run the servers with a Developer-ID-signed Node from a stable path (the official installer from nodejs.org, rather than a version manager that rewrites the binary in place). `apple-notes`' `doctor` tool reports which runtime you are on and whether it is ad-hoc signed.
+
 ## Coordination between servers
 
 The servers are designed to be composed by the client — one server's output feeds another's input. Current cross‑server patterns (see [`apple-events`](apple-events/) for worked examples):

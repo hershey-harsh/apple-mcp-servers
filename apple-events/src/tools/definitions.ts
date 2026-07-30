@@ -18,8 +18,10 @@ import {
  * Shared prose for the date fields. Every date parameter in this server accepts
  * plain language, so the model never has to compute a timestamp itself.
  */
+// Repeated on ~20 date fields, so every word here costs ~20x in the tool payload.
+// Keep it to the format plus enough examples to signal that plain language parses.
 const DATE_HINT =
-  "Accepts 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss', ISO 8601, or plain language: 'today', 'tomorrow 3pm', 'next monday', 'friday at 17:00', 'in 2 hours', 'sep 8', '+3d', 'end of week'.";
+  "'YYYY-MM-DD[ HH:mm:ss]', ISO 8601, or plain language ('tomorrow 3pm', 'next monday', 'in 2 hours', '+3d', 'end of week').";
 
 /** Reusable JSON Schema for a weekday list in EventKit's numbering. */
 const WEEKDAYS_PROPERTY = {
@@ -33,25 +35,22 @@ const WEEKDAYS_PROPERTY = {
 const ALARMS_PROPERTY = {
   type: 'array' as const,
   description:
-    'Alarms for the event. Each needs exactly one trigger: relativeOffset (seconds before start, negative), absoluteDate, or locationTrigger. Optionally add soundName or emailAddress to choose the action.',
+    'Each alarm needs exactly one trigger: relativeOffset, absoluteDate, or locationTrigger. soundName or emailAddress optionally set the action.',
   items: {
     type: 'object' as const,
     properties: {
       relativeOffset: {
         type: 'number' as const,
-        description:
-          'Seconds relative to the start; negative fires before (-600 = 10 minutes before).',
+        description: 'Seconds from the start; negative fires before (-600 = 10 min before).',
       },
       absoluteDate: { type: 'string' as const, description: DATE_HINT },
       soundName: {
         type: 'string' as const,
-        description:
-          'System sound name for an audible alarm (e.g. "Basso", "Ping", "Glass").',
+        description: 'System sound for an audible alarm (e.g. "Basso", "Ping", "Glass").',
       },
       emailAddress: {
         type: 'string' as const,
-        description:
-          'Send an email alarm to this address. Takes precedence over soundName.',
+        description: 'Email alarm recipient. Takes precedence over soundName.',
       },
     },
   },
@@ -84,13 +83,11 @@ export const TOOLS: Tool[] = [
         },
         startDate: {
           type: 'string',
-          description:
-            "Start date. RECOMMENDED format: 'YYYY-MM-DD HH:mm:ss' (local time without timezone). Also supports 'YYYY-MM-DD' and ISO 8601 with timezone.",
+          description: `Start date. ${DATE_HINT} Times without a timezone are local.`,
         },
         dueDate: {
           type: 'string',
-          description:
-            "Due date. RECOMMENDED format: 'YYYY-MM-DD HH:mm:ss' (local time without timezone, e.g., '2025-11-04 18:00:00'). Also supports: 'YYYY-MM-DD', 'YYYY-MM-DDTHH:mm:ss', or ISO 8601 with timezone (e.g., '2025-10-30T04:00:00Z'). When no timezone is specified, the time is interpreted as local time.",
+          description: `Due date. ${DATE_HINT} Times without a timezone are local.`,
         },
         completionDate: {
           type: 'string',
@@ -790,7 +787,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'calendar_schedule',
     description:
-      'Read-only planning over calendars and reminders. Three actions: "agenda" merges events and dated reminders into one chronological timeline (with overlap warnings and, optionally, the free gaps in each day); "free-slots" finds open time that satisfies a duration, a daily window, chosen weekdays and a buffer around existing commitments; "conflicts" checks proposed times against what is already booked before you create anything. Use this BEFORE calendar_events create — it is how you answer "when am I free", "does this clash", "what does my week look like". Defaults to "agenda" for the next 7 days when called with no arguments. Cross-server: pair free-slots with the Apple Maps travel-time tools when a slot has to allow for getting across campus, and with the Apple Weather forecast tools when the slot is for something outdoors.',
+      'Read-only planning over calendars and reminders. Four actions: "agenda" merges events and dated reminders into one chronological timeline (with overlap warnings and, optionally, the free gaps in each day); "free-slots" finds open time that satisfies a duration, a daily window, chosen weekdays and a buffer around existing commitments; "conflicts" checks proposed times against what is already booked before you create anything; "hops" extracts the back-to-back location changes the schedule demands, already shaped for the Apple Maps MCP. Use this BEFORE calendar_events create — it is how you answer "when am I free", "does this clash", "what does my week look like", "can I make it across campus in time". Defaults to "agenda" for the next 7 days when called with no arguments. Cross-server: feed "hops" straight into maps_check_campus_hops; pair free-slots with the Apple Maps travel-time tools when a slot has to allow for getting across campus, and with the Apple Weather forecast tools when the slot is for something outdoors.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -798,7 +795,12 @@ export const TOOLS: Tool[] = [
           type: 'string',
           enum: SCHEDULE_ACTIONS,
           description:
-            'agenda = merged timeline; free-slots = open time; conflicts = clash check for proposed slots. Defaults to agenda.',
+            'agenda = merged timeline; free-slots = open time; conflicts = clash check for proposed slots; hops = back-to-back location changes for a travel-time check. Defaults to agenda.',
+        },
+        maxGapMinutes: {
+          type: 'number',
+          description:
+            'hops: only report transitions with a gap this size or smaller, i.e. the tight ones. Defaults to 60.',
         },
         startDate: {
           type: 'string',

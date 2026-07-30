@@ -31,6 +31,7 @@ import type {
   ExportedAccount,
   ExportedFolder,
   ExportedNote,
+  ExportNotesOptions,
 } from "@/types.js";
 import { BULK_LIST_MUTATION_ERROR, executeAppleScript } from "@/utils/applescript.js";
 import { getChecklistItems, type ChecklistItem } from "@/utils/checklistParser.js";
@@ -3072,12 +3073,18 @@ export class AppleNotesManager {
   /**
    * Export structure for a single note.
    */
-  private exportNote(note: Note, content: string): ExportedNote {
+  private exportNote(
+    note: Note,
+    content: string,
+    body: NonNullable<ExportNotesOptions["body"]> = "both",
+  ): ExportedNote {
     return {
       id: note.id,
       title: note.title,
-      content: content,
-      plaintext: this.htmlToPlaintext(content),
+      ...(body === "html" || body === "both" ? { content } : {}),
+      ...(body === "plaintext" || body === "both"
+        ? { plaintext: this.htmlToPlaintext(content) }
+        : {}),
       folder: note.folder || "Notes",
       account: note.account || "iCloud",
       created: note.created.toISOString(),
@@ -3140,8 +3147,12 @@ export class AppleNotesManager {
    * fs.writeFileSync('notes-backup.json', JSON.stringify(snapshot, null, 2));
    * ```
    */
-  exportNotesAsJson(): NotesExport {
-    const accounts = this.listAccounts();
+  exportNotesAsJson(options: ExportNotesOptions = {}): NotesExport {
+    const { account: onlyAccount, folder: onlyFolder, body = "plaintext", limit } = options;
+
+    const accounts = this.listAccounts().filter(
+      (a) => !onlyAccount || a.name.toLowerCase() === onlyAccount.toLowerCase(),
+    );
     const exportData: NotesExport = {
       exportDate: new Date().toISOString(),
       version: "1.0",
@@ -3149,14 +3160,23 @@ export class AppleNotesManager {
       summary: { totalNotes: 0, totalFolders: 0, totalAccounts: accounts.length },
     };
 
+    // A note body is only fetched when the caller asked for one; fetching it is a
+    // separate AppleScript round-trip per note, so body:"none" is much faster too.
+    const wantsBody = body !== "none";
+    const reachedLimit = () => limit !== undefined && exportData.summary.totalNotes >= limit;
+
     for (const account of accounts) {
-      const folders = this.listFolders(account.name);
+      const folders = this.listFolders(account.name).filter(
+        (f) => !onlyFolder || f.name.toLowerCase() === onlyFolder.toLowerCase(),
+      );
       const accountData: ExportedAccount = {
         name: account.name,
         folders: [],
       };
 
       for (const folder of folders) {
+        if (reachedLimit()) break;
+
         const folderData: ExportedFolder = {
           name: folder.name,
           notes: [],
@@ -3166,17 +3186,19 @@ export class AppleNotesManager {
         const noteTitles = this.listNotes(account.name, folder.name);
 
         for (const title of noteTitles) {
+          if (reachedLimit()) break;
+
           // Get note details
           const note = this.getNoteDetails(title, account.name);
           if (!note) continue;
 
           // Skip password-protected notes' content but include metadata
           let content = "";
-          if (!note.passwordProtected) {
+          if (wantsBody && !note.passwordProtected) {
             content = this.getNoteContent(title, account.name);
           }
 
-          folderData.notes.push(this.exportNote(note, content));
+          folderData.notes.push(this.exportNote(note, content, body));
           exportData.summary.totalNotes++;
         }
 
@@ -3185,6 +3207,12 @@ export class AppleNotesManager {
       }
 
       exportData.accounts.push(accountData);
+
+      if (reachedLimit()) break;
+    }
+
+    if (reachedLimit()) {
+      exportData.summary.truncated = true;
     }
 
     return exportData;

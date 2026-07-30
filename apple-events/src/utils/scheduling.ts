@@ -395,3 +395,73 @@ export const isWithinAnyRange = (
       day <= startOfDay(range.end).getTime(),
   );
 };
+
+/**
+ * One transition between two consecutive, located commitments.
+ *
+ * Field names match what `maps_check_campus_hops` reads off each hop
+ * (`from_location`, `to_location`, `available_minutes`, `transport`) so the
+ * array can be handed straight to the Apple Maps server with no reshaping. The
+ * `from_event` / `to_event` labels are extra and ignored there — they exist so a
+ * verdict can be read back against the calendar without a second lookup.
+ */
+export interface ScheduleHop {
+  from_location: string;
+  to_location: string;
+  available_minutes: number;
+  from_event: string;
+  to_event: string;
+  gap_start: string;
+  gap_end: string;
+}
+
+/**
+ * Derives the location changes a day actually demands.
+ *
+ * Only consecutive pairs count: what matters is whether you can get from the
+ * thing that just ended to the thing starting next. Events without a location
+ * are skipped rather than treated as a stop — a location-less event is usually a
+ * hold or an online meeting, and inventing a hop from it would produce a
+ * confident wrong answer. All-day events are skipped for the same reason: they
+ * have no meaningful end time to leave from.
+ *
+ * A pair whose locations are equal (case- and whitespace-insensitive) is not a
+ * hop; staying put needs no travel time.
+ */
+export const buildScheduleHops = (events: CalendarEvent[]): ScheduleHop[] => {
+  const located = events
+    .filter((event) => !event.isAllDay && (event.location ?? '').trim().length > 0)
+    .map((event) => ({
+      event,
+      start: parseEventDate(event.startDate),
+      end: parseEventDate(event.endDate),
+      location: (event.location ?? '').trim(),
+    }))
+    .filter(
+      (entry): entry is typeof entry & { start: Date; end: Date } =>
+        entry.start !== undefined && entry.end !== undefined,
+    )
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+  const hops: ScheduleHop[] = [];
+  for (let index = 0; index < located.length - 1; index += 1) {
+    const from = located[index];
+    const to = located[index + 1];
+    if (from.location.toLowerCase() === to.location.toLowerCase()) continue;
+
+    // Overlapping commitments yield a negative gap. Report it as 0 rather than a
+    // negative number: the schedule is already broken, and the hop check should
+    // say "not makeable", not do arithmetic on an impossible window.
+    const gapMs = to.start.getTime() - from.end.getTime();
+    hops.push({
+      from_location: from.location,
+      to_location: to.location,
+      available_minutes: Math.max(0, Math.round(gapMs / 60000)),
+      from_event: from.event.title,
+      to_event: to.event.title,
+      gap_start: from.end.toISOString(),
+      gap_end: to.start.toISOString(),
+    });
+  }
+  return hops;
+};

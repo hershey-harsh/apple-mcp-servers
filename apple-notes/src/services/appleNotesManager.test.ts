@@ -3213,13 +3213,96 @@ describe("AppleNotesManager", () => {
         .mockReturnValueOnce({ success: true, output: noteDetailsOutput("Locked Note", true) });
       // No getNoteContent call because note is password-protected
 
-      const result = manager.exportNotesAsJson() as {
+      // body:"both" so the HTML field is present at all — the point of this test is
+      // that it comes back empty for a locked note, not that it is absent.
+      const result = manager.exportNotesAsJson({ body: "both" }) as {
         accounts: { folders: { notes: { content: string; passwordProtected: boolean }[] }[] }[];
       };
 
       const note = result.accounts[0].folders[0].notes[0];
       expect(note.passwordProtected).toBe(true);
       expect(note.content).toBe("");
+    });
+
+    it("omits the HTML body by default and keeps plaintext", () => {
+      mockExecuteAppleScript
+        .mockReturnValueOnce({ success: true, output: "iCloud" })
+        .mockReturnValueOnce({ success: true, output: "id1\tNotes" })
+        .mockReturnValueOnce({
+          success: true,
+          output: ["Test Note", "x-coredata://ABC/ICNote/p1"].join(F),
+        })
+        .mockReturnValueOnce({ success: true, output: noteDetailsOutput("Test Note", false) })
+        .mockReturnValueOnce({
+          success: true,
+          output: "<div>Test Note</div><div>Content here</div>",
+        });
+
+      const result = manager.exportNotesAsJson() as {
+        accounts: { folders: { notes: { content?: string; plaintext?: string }[] }[] }[];
+      };
+
+      const note = result.accounts[0].folders[0].notes[0];
+      expect(note.content).toBeUndefined();
+      expect(note.plaintext).toContain("Content here");
+    });
+
+    it('body:"none" skips the per-note content fetch entirely', () => {
+      mockExecuteAppleScript
+        .mockReturnValueOnce({ success: true, output: "iCloud" })
+        .mockReturnValueOnce({ success: true, output: "id1\tNotes" })
+        .mockReturnValueOnce({
+          success: true,
+          output: ["Test Note", "x-coredata://ABC/ICNote/p1"].join(F),
+        })
+        .mockReturnValueOnce({ success: true, output: noteDetailsOutput("Test Note", false) });
+      // Deliberately no getNoteContent mock: a fifth call would throw.
+
+      const result = manager.exportNotesAsJson({ body: "none" }) as {
+        accounts: { folders: { notes: { content?: string; plaintext?: string }[] }[] }[];
+        summary: { totalNotes: number };
+      };
+
+      const note = result.accounts[0].folders[0].notes[0];
+      expect(note.content).toBeUndefined();
+      expect(note.plaintext).toBeUndefined();
+      expect(result.summary.totalNotes).toBe(1);
+    });
+
+    it("stops at limit and flags the export as truncated", () => {
+      mockExecuteAppleScript
+        .mockReturnValueOnce({ success: true, output: "iCloud" })
+        .mockReturnValueOnce({ success: true, output: "id1\tNotes" })
+        .mockReturnValueOnce({
+          success: true,
+          output: [
+            ["Note A", "x-coredata://ABC/ICNote/p1"].join(F),
+            ["Note B", "x-coredata://ABC/ICNote/p2"].join(F),
+          ].join(R),
+        })
+        .mockReturnValueOnce({ success: true, output: noteDetailsOutput("Note A", false) });
+
+      const result = manager.exportNotesAsJson({ limit: 1, body: "none" }) as {
+        summary: { totalNotes: number; truncated?: boolean };
+      };
+
+      expect(result.summary.totalNotes).toBe(1);
+      expect(result.summary.truncated).toBe(true);
+    });
+
+    it("scopes to a single account", () => {
+      mockExecuteAppleScript
+        .mockReturnValueOnce({ success: true, output: ["iCloud", "On My Mac"].join(R) })
+        .mockReturnValueOnce({ success: true, output: "id1\tNotes" })
+        .mockReturnValueOnce({ success: true, output: "" });
+
+      const result = manager.exportNotesAsJson({ account: "On My Mac", body: "none" }) as {
+        accounts: { name: string }[];
+        summary: { totalAccounts: number };
+      };
+
+      expect(result.summary.totalAccounts).toBe(1);
+      expect(result.accounts[0].name).toBe("On My Mac");
     });
 
     it("handles empty accounts", () => {

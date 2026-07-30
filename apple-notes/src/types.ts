@@ -671,10 +671,10 @@ export interface ExportedNote {
   id: string;
   /** Note title */
   title: string;
-  /** HTML content (empty for password-protected notes) */
-  content: string;
-  /** Plain text content (extracted from HTML) */
-  plaintext: string;
+  /** HTML content (empty for password-protected notes). Omitted unless the export asks for it. */
+  content?: string;
+  /** Plain text content (extracted from HTML). Omitted unless the export asks for it. */
+  plaintext?: string;
   /** Folder containing the note */
   folder: string;
   /** Account containing the note */
@@ -734,5 +734,25 @@ export interface NotesExport {
     totalNotes: number;
     totalFolders: number;
     totalAccounts: number;
+    /** Set when `limit` stopped the walk early, so callers can tell a partial export from a complete one. */
+    truncated?: boolean;
   };
+}
+
+/**
+ * Scoping options for {@link AppleNotesManager.exportNotesAsJson}.
+ *
+ * An unscoped export walks every note in every folder and embeds each body
+ * twice — once as HTML, once as plaintext — which is far more than a tool
+ * response can reasonably carry for a real library. These narrow the walk.
+ */
+export interface ExportNotesOptions {
+  /** Restrict to a single account. */
+  account?: string;
+  /** Restrict to a single folder. */
+  folder?: string;
+  /** Which representation of each body to include. Defaults to "plaintext". */
+  body?: "none" | "plaintext" | "html" | "both";
+  /** Stop after this many notes; sets `summary.truncated` when it bites. */
+  limit?: number;
 }

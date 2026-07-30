@@ -14,6 +14,7 @@ vi.mock("child_process", () => ({
 import { spawnSync } from "child_process";
 import { runDoctor, formatDoctorReport, checkNodeRuntimeSignature } from "@/tools/doctor.js";
 import { hasFullDiskAccess } from "@/utils/checklistParser.js";
+import { NODE_RUNTIME_TCC_GUIDE_URL } from "@/utils/docsUrls.js";
 import type { AppleNotesManager } from "@/services/appleNotesManager.js";
 
 const mockSpawnSync = vi.mocked(spawnSync);
@@ -86,7 +87,10 @@ describe("checkNodeRuntimeSignature", () => {
     const c = checkNodeRuntimeSignature();
     expect(c.status).toBe("warn");
     expect(c.detail).toMatch(/ad-hoc signed/);
-    expect(c.detail).toMatch(/NODE-RUNTIME-AND-TCC-PERMISSIONS/);
+    // Assert against the constant rather than a literal anchor: the previous
+    // hardcoded spelling outlived the doc it pointed at and failed silently.
+    expect(c.detail).toContain(NODE_RUNTIME_TCC_GUIDE_URL);
+    expect(NODE_RUNTIME_TCC_GUIDE_URL).toMatch(/#node-runtime-and-tcc-permissions$/);
   });
 
   it("warns when codesign output is unavailable", () => {

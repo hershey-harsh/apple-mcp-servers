@@ -6,6 +6,7 @@
 import type { CalendarEvent } from '../types/index.js';
 import {
   buildAgendaEntries,
+  buildScheduleHops,
   expandWeeklyDates,
   findConflicts,
   findFreeSlots,
@@ -364,5 +365,95 @@ describe('formatDuration', () => {
     expect(formatDuration(45)).toBe('45m');
     expect(formatDuration(120)).toBe('2h');
     expect(formatDuration(150)).toBe('2h 30m');
+  });
+});
+
+describe('buildScheduleHops', () => {
+  const located = (
+    title: string,
+    startHour: number,
+    endHour: number,
+    location: string,
+  ): CalendarEvent =>
+    event({
+      id: title,
+      title,
+      location,
+      startDate: `2026-09-08T${String(startHour).padStart(2, '0')}:00:00-04:00`,
+      endDate: `2026-09-08T${String(endHour).padStart(2, '0')}:00:00-04:00`,
+    });
+
+  it('derives a hop between consecutive events in different places', () => {
+    const hops = buildScheduleHops([
+      located('Calc', 10, 11, 'Wean 7500'),
+      located('Physics', 11, 12, 'Doherty 2210'),
+    ]);
+    expect(hops).toHaveLength(1);
+    expect(hops[0]).toMatchObject({
+      from_location: 'Wean 7500',
+      to_location: 'Doherty 2210',
+      available_minutes: 0,
+      from_event: 'Calc',
+      to_event: 'Physics',
+    });
+  });
+
+  it('measures the real gap between the two', () => {
+    const hops = buildScheduleHops([
+      located('Calc', 10, 11, 'Wean 7500'),
+      located('Physics', 12, 13, 'Doherty 2210'),
+    ]);
+    expect(hops[0].available_minutes).toBe(60);
+  });
+
+  it('is not fooled by input order', () => {
+    const hops = buildScheduleHops([
+      located('Physics', 12, 13, 'Doherty 2210'),
+      located('Calc', 10, 11, 'Wean 7500'),
+    ]);
+    expect(hops[0].from_event).toBe('Calc');
+    expect(hops[0].to_event).toBe('Physics');
+  });
+
+  it('skips a pair that stays in the same room', () => {
+    expect(
+      buildScheduleHops([
+        located('Lecture', 10, 11, 'Wean 7500'),
+        located('Recitation', 11, 12, '  wean 7500 '),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('skips events with no location rather than inventing a hop', () => {
+    const hops = buildScheduleHops([
+      located('Calc', 10, 11, 'Wean 7500'),
+      event({ id: 'hold', title: 'Focus block', startDate: '2026-09-08T11:00:00-04:00', endDate: '2026-09-08T12:00:00-04:00' }),
+      located('Physics', 12, 13, 'Doherty 2210'),
+    ]);
+    // The unlocated hold is not a stop, so the hop spans Calc -> Physics.
+    expect(hops).toHaveLength(1);
+    expect(hops[0]).toMatchObject({ from_event: 'Calc', to_event: 'Physics' });
+  });
+
+  it('ignores all-day events, which have no time to leave from', () => {
+    const hops = buildScheduleHops([
+      event({ id: 'ad', title: 'Reading day', location: 'Campus', isAllDay: true }),
+      located('Calc', 10, 11, 'Wean 7500'),
+      located('Physics', 11, 12, 'Doherty 2210'),
+    ]);
+    expect(hops).toHaveLength(1);
+    expect(hops[0].from_event).toBe('Calc');
+  });
+
+  it('clamps an overlapping pair to zero rather than reporting negative time', () => {
+    const hops = buildScheduleHops([
+      located('Calc', 10, 12, 'Wean 7500'),
+      located('Physics', 11, 13, 'Doherty 2210'),
+    ]);
+    expect(hops[0].available_minutes).toBe(0);
+  });
+
+  it('returns nothing when there is only one located event', () => {
+    expect(buildScheduleHops([located('Calc', 10, 11, 'Wean 7500')])).toEqual([]);
   });
 });

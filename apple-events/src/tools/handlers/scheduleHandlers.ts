@@ -12,6 +12,7 @@ import { reminderRepository } from '../../utils/reminderRepository.js';
 import {
   addDays,
   buildAgendaEntries,
+  buildScheduleHops,
   findConflicts,
   findFreeSlots,
   formatDateTime,
@@ -28,6 +29,7 @@ import {
   AgendaSchema,
   ConflictCheckSchema,
   FreeSlotsSchema,
+  HopsSchema,
 } from '../../validation/schemas.js';
 import { extractAndValidateArgs } from './shared.js';
 
@@ -335,4 +337,74 @@ export const handleConflicts = async (
       ...lines,
     ].join('\n');
   }, 'check conflicts');
+};
+
+/**
+ * `hops` — the location changes the calendar actually demands, shaped for the
+ * Apple Maps server's `maps_check_campus_hops`.
+ *
+ * The feasibility maths lives in apple-maps (it is the side that knows travel
+ * times); what was missing was any way to get the real hops out of the calendar
+ * without reading an agenda and retyping buildings by hand. This closes that gap:
+ * the JSON block below is the `hops` argument, verbatim.
+ */
+export const handleHops = async (
+  args: ScheduleToolArgs,
+): Promise<CallToolResult> => {
+  return handleAsyncOperation(async () => {
+    const validated = extractAndValidateArgs(args, HopsSchema);
+    const window = resolveWindow(validated.startDate, validated.endDate, 1);
+
+    const events = await calendarRepository.findEvents({
+      startDate: formatDay(window.start),
+      endDate: formatDay(window.end),
+      calendarName: validated.filterCalendar,
+      search: validated.search,
+      accountName: validated.filterAccount,
+    });
+
+    const allHops = buildScheduleHops(events);
+    const hops = allHops.filter(
+      (hop) => hop.available_minutes <= validated.maxGapMinutes,
+    );
+
+    if (hops.length === 0) {
+      const located = events.filter(
+        (event) => !event.isAllDay && (event.location ?? '').trim().length > 0,
+      ).length;
+      // Distinguish "nothing tight" from "nothing to work with" — they call for
+      // opposite follow-ups, and a bare "no hops" would hide the difference.
+      const reason =
+        located < 2
+          ? `Only ${located} located event(s) in range — hops need two consecutive events that both have a location set.`
+          : allHops.length === 0
+            ? 'Consecutive events share the same location, so no travel is needed.'
+            : `All ${allHops.length} location change(s) have gaps over ${validated.maxGapMinutes} min. Raise maxGapMinutes to see them.`;
+      return `### Schedule hops: none tight\n\n${reason}`;
+    }
+
+    const lines = hops.map(
+      (hop) =>
+        `- ${hop.from_event} → ${hop.to_event}: ${hop.from_location} → ${hop.to_location}, ${hop.available_minutes} min gap (${formatDateTime(new Date(hop.gap_start)).slice(11)}–${formatDateTime(new Date(hop.gap_end)).slice(11)})`,
+    );
+
+    const payload = hops.map(
+      ({ from_location, to_location, available_minutes }) => ({
+        from_location,
+        to_location,
+        available_minutes,
+      }),
+    );
+
+    return [
+      `### Schedule hops: ${hops.length} transition(s) with a gap of ${validated.maxGapMinutes} min or less`,
+      '',
+      ...lines,
+      '',
+      'Pass this to the Apple Maps MCP `maps_check_campus_hops` as `hops` to check whether each is makeable:',
+      '```json',
+      JSON.stringify(payload, null, 2),
+      '```',
+    ].join('\n');
+  }, 'build schedule hops');
 };

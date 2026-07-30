@@ -43,6 +43,7 @@ export {
   handleAgenda,
   handleConflicts,
   handleFreeSlots,
+  handleHops,
 } from './scheduleHandlers.js';
 
 export {

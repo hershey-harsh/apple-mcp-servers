@@ -17,17 +17,31 @@
 export const DEFAULT_SEARCH_LIMIT = 50;
 
 /**
- * Resolve the effective result cap for a search.
+ * Default cap for `list-notes`.
+ *
+ * Higher than {@link DEFAULT_SEARCH_LIMIT} because listing returns titles only —
+ * one short line per note, with no per-note AppleScript property reads — so the
+ * cost per row is a fraction of a search hit. It still needs *a* bound: an
+ * unbounded list of a multi-thousand-note library is thousands of lines of
+ * response, which crowds out the conversation it was meant to inform.
+ */
+export const DEFAULT_LIST_LIMIT = 200;
+
+/**
+ * Resolve the effective result cap for a search or list.
  *
  * Returns the floored positive `limit` when the caller supplied one, otherwise
- * {@link DEFAULT_SEARCH_LIMIT}. A non-positive or non-finite value is treated as
- * unset (the tool schema already rejects those, so this is defensive).
+ * `fallback`. A non-positive or non-finite value is treated as unset (the tool
+ * schema already rejects those, so this is defensive).
  */
-export function resolveSearchLimit(limit?: number): number {
+export function resolveSearchLimit(
+  limit?: number,
+  fallback: number = DEFAULT_SEARCH_LIMIT,
+): number {
   if (limit !== undefined && Number.isFinite(limit) && limit > 0) {
     return Math.floor(limit);
   }
-  return DEFAULT_SEARCH_LIMIT;
+  return fallback;
 }
 
 /**
