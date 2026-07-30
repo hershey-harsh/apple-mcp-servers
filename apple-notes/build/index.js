@@ -39866,6 +39866,34 @@ var AppleNotesManager = class {
     return true;
   }
   /**
+   * Duplicates a note by its CoreData ID, mirroring Notes.app's right-click
+   * "Duplicate". The source note's body is copied verbatim into a new note in
+   * the SAME folder and account, preserving formatting and the title (Notes
+   * derives the display title from the first line of the body).
+   *
+   * Password-protected/locked notes cannot be duplicated — their body is
+   * unreadable while locked — and will return null.
+   *
+   * @param id - CoreData ID of the note to duplicate
+   * @returns The new note's CoreData ID on success, or null on failure
+   */
+  duplicateNoteById(id) {
+    const safeId = sanitizeId(id);
+    const command = `
+      set srcNote to note id "${safeId}"
+      set srcBody to body of srcNote
+      make new note at (container of srcNote) with properties {body:srcBody}
+    `;
+    const script = buildAppLevelScript(command);
+    const result = executeMutationAppleScript(script);
+    if (!result.success) {
+      console.error(`Failed to duplicate note with ID "${id}":`, result.error);
+      return null;
+    }
+    const rawOutput = result.output.trim();
+    return extractCoreDataId(rawOutput, "note") || rawOutput || null;
+  }
+  /**
    * Updates an existing note's content and optionally its title.
    *
    * Apple Notes derives the title from the first line of the body,
@@ -42356,6 +42384,44 @@ server.registerTool(
     };
     return successResponse(JSON.stringify(metadata, null, 2), metadata);
   }, "Error retrieving note")
+);
+server.registerTool(
+  "duplicate-note",
+  {
+    description: "Use when: you want a copy of an existing note (like Notes.app right-click > Duplicate).\nCopies the note's body, formatting, and title into a NEW note in the SAME folder and account, and returns the new note's id.\nDo not use when: the note is password-protected/locked \u2014 its body cannot be read while locked, so unlock it in Notes first.",
+    inputSchema: {
+      id: external_exports.string().min(1, "Note ID is required").max(MAX.ID)
+    },
+    outputSchema: {
+      id: external_exports.string().optional(),
+      title: external_exports.string().optional()
+    }
+  },
+  withErrorHandling(({ id }) => {
+    const source = notesManager.getNoteById(id);
+    if (!source) {
+      return errorResponse(`Note with ID "${id}" not found`);
+    }
+    if (source.passwordProtected) {
+      return errorResponse(
+        `Note "${source.title}" is password-protected and cannot be duplicated. Unlock it in Notes first.`
+      );
+    }
+    const newId = notesManager.duplicateNoteById(id);
+    if (!newId) {
+      return errorResponse(`Failed to duplicate note "${source.title}"`);
+    }
+    const created = notesManager.getNoteById(newId);
+    const result = {
+      id: newId,
+      title: created?.title ?? source.title
+    };
+    return successResponse(
+      `Duplicated note "${source.title}".
+New note id: ${newId}`,
+      result
+    );
+  }, "Error duplicating note")
 );
 server.registerTool(
   "get-note-details",

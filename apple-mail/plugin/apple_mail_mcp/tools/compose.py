@@ -1422,6 +1422,116 @@ tell application "Mail"
 
 @mcp.tool()
 @inject_preferences
+def redirect_email(
+    account: str,
+    subject_keyword: str,
+    to: str,
+    mailbox: str = "INBOX",
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    from_address: Optional[str] = None,
+) -> str:
+    """
+    Redirect an email to new recipients (Message > Redirect).
+
+    Redirect differs from forward: it re-sends the ORIGINAL message unchanged and
+    preserves the original sender, so the recipient sees it as if it came from
+    the original author (replies go back to them, not to you). Use forward_email
+    instead when you want to add a comment or have it come from you.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work")
+        subject_keyword: Keyword to match in the email subject
+        to: Recipient email address(es), comma-separated for multiple
+        mailbox: Mailbox to search in (default: "INBOX")
+        cc: Optional CC recipients, comma-separated
+        bcc: Optional BCC recipients, comma-separated
+        from_address: Optional sender address (one of the account's configured
+            addresses). When omitted, Mail uses the account default.
+
+    Returns:
+        Confirmation message with details of the redirected email.
+    """
+    sender_override, sender_error = _validate_from_address(account, from_address)
+    if sender_error:
+        return sender_error
+
+    safe_account = escape_applescript(account)
+    safe_subject_keyword = escape_applescript(subject_keyword)
+    safe_to = escape_applescript(to)
+    safe_mailbox = escape_applescript(mailbox)
+
+    sender_script = _compose_sender_script(
+        "redirectMessage", "targetAccount", sender_override
+    )
+
+    def _recipient_block(field: str, values: Optional[str]) -> str:
+        block = ""
+        for addr in _split_addresses(values):
+            safe_addr = escape_applescript(addr)
+            block += (
+                f'\n                make new {field} recipient at end of '
+                f'{field} recipients of redirectMessage with properties '
+                f'{{address:"{safe_addr}"}}'
+            )
+        return block
+
+    to_script = _recipient_block("to", to)
+    cc_script = _recipient_block("cc", cc)
+    bcc_script = _recipient_block("bcc", bcc)
+
+    script = f'''
+    tell application "Mail"
+        set outputText to "REDIRECTING EMAIL" & return & return
+        try
+            set targetAccount to account "{safe_account}"
+            try
+                set targetMailbox to mailbox "{safe_mailbox}" of targetAccount
+            on error
+                if "{safe_mailbox}" is "INBOX" then
+                    set targetMailbox to mailbox "Inbox" of targetAccount
+                else
+                    error "Mailbox not found: {safe_mailbox}"
+                end if
+            end try
+
+            set mailboxMessages to every message of targetMailbox
+            set foundMessage to missing value
+            repeat with aMessage in mailboxMessages
+                try
+                    if (subject of aMessage) contains "{safe_subject_keyword}" then
+                        set foundMessage to aMessage
+                        exit repeat
+                    end if
+                end try
+            end repeat
+
+            if foundMessage is not missing value then
+                set messageSubject to subject of foundMessage
+                set redirectMessage to redirect foundMessage with opening window
+                {sender_script}
+                {to_script}
+                {cc_script}
+                {bcc_script}
+                send redirectMessage
+                set outputText to outputText & "Email redirected successfully." & return
+                set outputText to outputText & "To: {safe_to}" & return
+                set outputText to outputText & "Subject: " & messageSubject & return
+            else
+                set outputText to outputText & "No email found matching: {safe_subject_keyword}" & return
+            end if
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+        return outputText
+    end tell
+    '''
+
+    return run_applescript(script)
+
+
+@mcp.tool()
+@inject_preferences
 def manage_drafts(
     account: str,
     action: str,

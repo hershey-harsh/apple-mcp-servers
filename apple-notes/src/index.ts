@@ -524,6 +524,49 @@ server.registerTool(
   }, "Error retrieving note")
 );
 
+// --- duplicate-note ---
+
+server.registerTool(
+  "duplicate-note",
+  {
+    description:
+      "Use when: you want a copy of an existing note (like Notes.app right-click > Duplicate).\nCopies the note's body, formatting, and title into a NEW note in the SAME folder and account, and returns the new note's id.\nDo not use when: the note is password-protected/locked — its body cannot be read while locked, so unlock it in Notes first.",
+    inputSchema: {
+      id: z.string().min(1, "Note ID is required").max(MAX.ID),
+    },
+    outputSchema: {
+      id: z.string().optional(),
+      title: z.string().optional(),
+    },
+  },
+  withErrorHandling(({ id }) => {
+    const source = notesManager.getNoteById(id);
+    if (!source) {
+      return errorResponse(`Note with ID "${id}" not found`);
+    }
+    if (source.passwordProtected) {
+      return errorResponse(
+        `Note "${source.title}" is password-protected and cannot be duplicated. Unlock it in Notes first.`
+      );
+    }
+
+    const newId = notesManager.duplicateNoteById(id);
+    if (!newId) {
+      return errorResponse(`Failed to duplicate note "${source.title}"`);
+    }
+
+    const created = notesManager.getNoteById(newId);
+    const result = {
+      id: newId,
+      title: created?.title ?? source.title,
+    };
+    return successResponse(
+      `Duplicated note "${source.title}".\nNew note id: ${newId}`,
+      result
+    );
+  }, "Error duplicating note")
+);
+
 // --- get-note-details ---
 
 server.registerTool(

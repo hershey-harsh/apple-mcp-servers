@@ -368,14 +368,15 @@ def update_email_status(
     flag_color: Optional[str] = None,
 ) -> str:
     """
-    Update email status - mark as read/unread or flag/unflag emails.
+    Update email status - mark read/unread, flag/unflag, or mark junk/not junk.
 
     When message_ids is provided, uses exact ID matching (ignores other filters).
     Otherwise filters by subject, sender, and/or age.
 
     Args:
         account: Account name (e.g., "Gmail", "Work")
-        action: Action to perform: "mark_read", "mark_unread", "flag", "unflag"
+        action: Action to perform: "mark_read", "mark_unread", "flag", "unflag",
+            "junk" (mark as junk mail), or "not_junk" (clear the junk flag)
         subject_keyword: Optional keyword to filter emails by subject
         subject_keywords: Optional list of subject keywords; matches any keyword
         sender: Optional sender to filter emails by
@@ -436,8 +437,19 @@ def update_email_status(
         bulk_action_script = "set flagged status of targetMessages to false"
         single_action_script = "set flagged status of aMessage to false"
         action_label = "Unflagged"
+    elif action == "junk":
+        bulk_action_script = "set junk mail status of targetMessages to true"
+        single_action_script = "set junk mail status of aMessage to true"
+        action_label = "Marked as junk"
+    elif action == "not_junk":
+        bulk_action_script = "set junk mail status of targetMessages to false"
+        single_action_script = "set junk mail status of aMessage to false"
+        action_label = "Marked as not junk"
     else:
-        return f"Error: Invalid action '{action}'. Use: mark_read, mark_unread, flag, unflag"
+        return (
+            f"Error: Invalid action '{action}'. Use: mark_read, mark_unread, "
+            "flag, unflag, junk, not_junk"
+        )
 
     # --- ID-based path (fast, ignores other filters) ---
     if message_ids is not None:
@@ -954,6 +966,124 @@ def create_mailbox(
     return run_applescript(script)
 
 
+
+
+@mcp.tool()
+@inject_preferences
+def delete_mailbox(
+    account: str,
+    mailbox: str,
+    confirm: bool = False,
+) -> str:
+    """
+    Delete a mailbox (folder) and every message it contains.
+
+    Destructive and permanent. Supports nested paths (e.g. "Projects/2024").
+    System mailboxes (Inbox, Sent, Trash, Junk, Drafts, Archive) are protected
+    and cannot be deleted.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work")
+        mailbox: Mailbox name or slash-separated path to delete.
+        confirm: Must be True to actually delete (safety guard). When False,
+            returns a preview of what would be removed without acting.
+
+    Returns:
+        Confirmation, or a dry-run preview when confirm=False.
+    """
+    if not mailbox or not mailbox.strip():
+        return "Error: Mailbox name cannot be empty."
+
+    segments = [s.strip() for s in mailbox.split("/") if s.strip()]
+    if not segments:
+        return "Error: Mailbox name cannot be empty."
+
+    protected = {
+        "inbox", "sent", "sent messages", "trash", "deleted messages",
+        "junk", "junk email", "spam", "drafts", "archive", "outbox",
+    }
+    if segments[-1].lower() in protected:
+        return (
+            f"Error: '{segments[-1]}' is a protected system mailbox and cannot "
+            "be deleted."
+        )
+
+    safe_account = escape_applescript(account)
+    full_path = "/".join(segments)
+    safe_path = escape_applescript(full_path)
+
+    if not confirm:
+        return (
+            f"DRY RUN - would delete mailbox '{full_path}' in account "
+            f"'{account}' and ALL messages inside it. Re-run with confirm=True "
+            "to proceed."
+        )
+
+    ref_blocks = ""
+    for depth, seg in enumerate(segments):
+        seg_safe = escape_applescript(seg)
+        container = "targetAccount" if depth == 0 else "targetRef"
+        ref_blocks += (
+            f'            set targetRef to mailbox "{seg_safe}" of {container}\n'
+        )
+
+    script = f'''
+    tell application "Mail"
+        set outputText to "DELETING MAILBOX" & return & return
+        try
+            set targetAccount to account "{safe_account}"
+{ref_blocks}
+            delete targetRef
+            set outputText to outputText & "OK Mailbox deleted: {safe_path}" & return
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+        return outputText
+    end tell
+    '''
+
+    return run_applescript(script)
+
+
+@mcp.tool()
+@inject_preferences
+def list_signatures() -> str:
+    """
+    List the email signatures configured in Mail (Settings > Signatures).
+
+    Returns each signature's name and a short preview of its content. Signatures
+    are managed globally in Mail; this is the read side of that GUI panel.
+
+    Returns:
+        A formatted list of signature names with content previews.
+    """
+    script = '''
+    tell application "Mail"
+        set outputText to "MAIL SIGNATURES" & return & return
+        try
+            set sigList to every signature
+            set sigCount to count of sigList
+            if sigCount is 0 then
+                return "No signatures configured in Mail."
+            end if
+            set outputText to outputText & "Found " & sigCount & " signature(s):" & return & return
+            repeat with aSig in sigList
+                set sigName to name of aSig
+                set sigContent to content of aSig
+                set previewText to sigContent
+                if (count of characters of previewText) > 140 then
+                    set previewText to (text 1 thru 140 of previewText) & "..."
+                end if
+                set outputText to outputText & "- " & sigName & return
+                set outputText to outputText & "    " & previewText & return & return
+            end repeat
+        on error errMsg
+            return "Error: " & errMsg
+        end try
+        return outputText
+    end tell
+    '''
+    return run_applescript(script)
 
 
 @mcp.tool()

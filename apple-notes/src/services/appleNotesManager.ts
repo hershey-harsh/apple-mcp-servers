@@ -1227,6 +1227,40 @@ export class AppleNotesManager {
   }
 
   /**
+   * Duplicates a note by its CoreData ID, mirroring Notes.app's right-click
+   * "Duplicate". The source note's body is copied verbatim into a new note in
+   * the SAME folder and account, preserving formatting and the title (Notes
+   * derives the display title from the first line of the body).
+   *
+   * Password-protected/locked notes cannot be duplicated — their body is
+   * unreadable while locked — and will return null.
+   *
+   * @param id - CoreData ID of the note to duplicate
+   * @returns The new note's CoreData ID on success, or null on failure
+   */
+  duplicateNoteById(id: string): string | null {
+    const safeId = sanitizeId(id);
+    // Copy `body` into a new note in the source's own container. We rely on the
+    // implicit return of `make new note` (rather than `set x` + `return id of x`)
+    // because the latter can fail with -1728 in nested-folder contexts.
+    const command = `
+      set srcNote to note id "${safeId}"
+      set srcBody to body of srcNote
+      make new note at (container of srcNote) with properties {body:srcBody}
+    `;
+    const script = buildAppLevelScript(command);
+    const result = executeMutationAppleScript(script);
+
+    if (!result.success) {
+      console.error(`Failed to duplicate note with ID "${id}":`, result.error);
+      return null;
+    }
+
+    const rawOutput = result.output.trim();
+    return extractCoreDataId(rawOutput, "note") || rawOutput || null;
+  }
+
+  /**
    * Updates an existing note's content and optionally its title.
    *
    * Apple Notes derives the title from the first line of the body,

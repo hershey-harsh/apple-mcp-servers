@@ -8,9 +8,10 @@ Part of the [Apple MCP Servers](../README.md) collection.
 
 - **Read & browse** — list inbox, read messages and full threads, per‑mailbox unread counts, inbox dashboard/overview.
 - **Search** — search across accounts and mailboxes; find messages awaiting a reply or needing a response.
-- **Compose & reply** — compose new mail, reply, forward, and manage drafts (including rich‑text drafts).
-- **Organize** — move messages between mailboxes, create mailboxes, mark read/unread, manage Trash.
+- **Compose & reply** — compose new mail, reply, reply‑all, forward, **redirect** (re‑send preserving the original sender), and manage drafts (including rich‑text drafts).
+- **Organize** — move messages between mailboxes, create and **delete** mailboxes, mark read/unread, flag with colors, mark **junk / not junk**, and manage Trash.
 - **Attachments** — list, save, and export message attachments and sources.
+- **Signatures** — list the signatures configured in Mail's settings.
 - **Analyze** — statistics, top senders, and account overviews.
 
 ## Requirements

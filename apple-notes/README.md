@@ -6,7 +6,7 @@ Part of the [Apple MCP Servers](../README.md) collection.
 
 ## Capabilities
 
-- **Notes** — create, read, update, append to, move, and delete notes; get content as markdown, plaintext, or HTML; fetch metadata and note links.
+- **Notes** — create, read, update, append to, move, duplicate, and delete notes; get content as markdown, plaintext, or HTML; fetch metadata and note links.
 - **Folders** — create, rename, move, and delete folders, including nested folder paths.
 - **Search** — search titles or full content, filter by folder or modified date, with result limits.
 - **Attachments** — list, fetch, and save note attachments.
