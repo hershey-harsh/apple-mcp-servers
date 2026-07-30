@@ -52,7 +52,7 @@ describe('MCP Server E2E Tests', () => {
       const serverInfo = client.getServerVersion();
 
       expect(serverInfo).toBeDefined();
-      expect(serverInfo?.name).toBe('mcp-server-apple-events');
+      expect(serverInfo?.name).toBe('apple-events-mcp');
       expect(serverInfo?.version).toBeDefined();
     });
 

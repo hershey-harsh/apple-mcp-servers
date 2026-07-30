@@ -39,6 +39,8 @@ export interface AlarmJSON {
   absoluteDate?: string | null;
   locationTrigger?: LocationTriggerJSON | null;
   alarmType?: string | null;
+  soundName?: string | null;
+  emailAddress?: string | null;
 }
 
 export interface ParticipantJSON {

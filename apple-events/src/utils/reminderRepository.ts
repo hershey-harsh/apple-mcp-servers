@@ -95,6 +95,8 @@ class ReminderRepository {
           relativeOffset: alarm.relativeOffset ?? undefined,
           absoluteDate: alarm.absoluteDate ?? undefined,
           alarmType: mapAlarmType(alarm.alarmType),
+          soundName: alarm.soundName ?? undefined,
+          emailAddress: alarm.emailAddress ?? undefined,
           locationTrigger: alarm.locationTrigger
             ? {
                 title: alarm.locationTrigger.title,

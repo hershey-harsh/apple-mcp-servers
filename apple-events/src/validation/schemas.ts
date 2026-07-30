@@ -351,6 +351,10 @@ const AlarmSchema = z
     absoluteDate: SafeDateSchema,
     locationTrigger: LocationTriggerObjectSchema.optional(),
     alarmType: AlarmTypeSchema,
+    // Optional alarm ACTION (macOS-only). Not a trigger — excluded from the
+    // exactly-one-trigger check below. Setting either also determines alarmType.
+    soundName: z.string().min(1).max(255).optional(),
+    emailAddress: z.string().min(1).max(255).optional(),
   })
   .refine(
     (alarm) =>

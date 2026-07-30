@@ -69,6 +69,8 @@ struct AlarmJSON: Codable {
     let absoluteDate: String?
     let locationTrigger: LocationTriggerJSON?
     let alarmType: String?
+    let soundName: String?
+    let emailAddress: String?
 }
 
 struct ParticipantJSON: Codable {
@@ -176,23 +178,26 @@ private func structuredLocationToJSON(_ structuredLocation: EKStructuredLocation
 }
 
 private func alarmToJSON(_ alarm: EKAlarm, preferredTimeZone: TimeZone) -> AlarmJSON {
+    let type = alarmTypeToString(alarm.type)
+    let soundName = alarm.soundName
+    let emailAddress = alarm.emailAddress
+
     if let structured = locationTriggerToJSON(alarm) {
-        let type = alarmTypeToString(alarm.type)
-        return AlarmJSON(relativeOffset: nil, absoluteDate: nil, locationTrigger: structured, alarmType: type)
+        return AlarmJSON(relativeOffset: nil, absoluteDate: nil, locationTrigger: structured, alarmType: type, soundName: soundName, emailAddress: emailAddress)
     }
 
     if let absolute = alarm.absoluteDate {
-        let type = alarmTypeToString(alarm.type)
         return AlarmJSON(
             relativeOffset: nil,
             absoluteDate: formatEventDate(absolute, preferredTimeZone: preferredTimeZone, includeTime: true),
             locationTrigger: nil,
-            alarmType: type
+            alarmType: type,
+            soundName: soundName,
+            emailAddress: emailAddress
         )
     }
 
-    let type = alarmTypeToString(alarm.type)
-    return AlarmJSON(relativeOffset: alarm.relativeOffset, absoluteDate: nil, locationTrigger: nil, alarmType: type)
+    return AlarmJSON(relativeOffset: alarm.relativeOffset, absoluteDate: nil, locationTrigger: nil, alarmType: type, soundName: soundName, emailAddress: emailAddress)
 }
 
 private func alarmTypeToString(_ type: EKAlarmType) -> String? {
@@ -202,6 +207,19 @@ private func alarmTypeToString(_ type: EKAlarmType) -> String? {
     case .procedure: return "procedure"
     case .email: return "email"
     @unknown default: return nil
+    }
+}
+
+// Applies the alarm action (what happens when it fires) on top of its trigger.
+// Setting emailAddress or soundName also determines EKAlarm.type (email / audio);
+// email wins when both are supplied, since EventKit keeps only one action.
+// Procedure ("url") alarms are intentionally unsupported: Apple deprecated them in
+// OS X 10.9 and saving/modifying one throws a save error.
+private func applyAlarmAction(_ alarm: EKAlarm, soundName: String?, emailAddress: String?) {
+    if let email = emailAddress, !email.isEmpty {
+        alarm.emailAddress = email
+    } else if let sound = soundName, !sound.isEmpty {
+        alarm.soundName = sound
     }
 }
 
@@ -218,6 +236,7 @@ private func parseAlarms(from json: String, dateParser: (String) -> Date?) -> [E
             let alarm = EKAlarm()
             alarm.structuredLocation = structuredLocation
             alarm.proximity = proximity
+            applyAlarmAction(alarm, soundName: alarmJSON.soundName, emailAddress: alarmJSON.emailAddress)
             result.append(alarm)
             continue
         }
@@ -226,6 +245,7 @@ private func parseAlarms(from json: String, dateParser: (String) -> Date?) -> [E
            let date = dateParser(absoluteDateStr) {
             let alarm = EKAlarm()
             alarm.absoluteDate = date
+            applyAlarmAction(alarm, soundName: alarmJSON.soundName, emailAddress: alarmJSON.emailAddress)
             result.append(alarm)
             continue
         }
@@ -233,6 +253,7 @@ private func parseAlarms(from json: String, dateParser: (String) -> Date?) -> [E
         if let offset = alarmJSON.relativeOffset {
             let alarm = EKAlarm()
             alarm.relativeOffset = offset
+            applyAlarmAction(alarm, soundName: alarmJSON.soundName, emailAddress: alarmJSON.emailAddress)
             result.append(alarm)
             continue
         }

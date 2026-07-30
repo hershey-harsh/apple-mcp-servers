@@ -68,13 +68,18 @@ export interface StructuredLocation {
  * - Relative alarms use seconds offset from start/due dates (negative = before).
  * - Absolute alarms fire at a specific date/time.
  * - Location alarms use a structured location + proximity (geofence).
- * - alarmType is READ-ONLY: determined automatically by EventKit based on alarm properties.
+ * - soundName / emailAddress choose the alarm ACTION (audio / email); setting either
+ *   also determines alarmType. Email wins if both are given. macOS-only.
+ * - alarmType is READ-ONLY: derived from the action fields above (set soundName for
+ *   'audio', emailAddress for 'email'; otherwise 'display'). 'procedure' is legacy/unsupported.
  */
 export interface Alarm {
   relativeOffset?: number;
   absoluteDate?: string;
   locationTrigger?: LocationTrigger;
   alarmType?: 'display' | 'audio' | 'procedure' | 'email';
+  soundName?: string;
+  emailAddress?: string;
 }
 
 /**

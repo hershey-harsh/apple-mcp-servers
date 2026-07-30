@@ -65,18 +65,27 @@ type ToolName = RoutedToolName;
 const createActionRouter = <TArgs extends { action: string }>(
   toolName: RoutedToolName,
   handlerMap: Record<TArgs['action'], ActionHandler<TArgs>>,
+  // When provided, this action is used if the call omits `action` (or args entirely),
+  // e.g. `calendar_calendars` defaults to `read` so listing needs no arguments.
+  defaultAction?: TArgs['action'],
 ): ToolRouter => {
   return async (args?: ToolArgs) => {
     if (!args) {
-      return createErrorResponse('No arguments provided');
+      if (defaultAction === undefined) {
+        return createErrorResponse('No arguments provided');
+      }
+      // args is undefined here; the default (read) handler tolerates that.
+      return handlerMap[defaultAction as keyof typeof handlerMap](
+        args as unknown as TArgs,
+      );
     }
 
     const typedArgs = args as TArgs;
-    const action = typedArgs.action;
+    const action = (typedArgs.action ?? defaultAction) as TArgs['action'];
 
     if (!(action in handlerMap)) {
       return createErrorResponse(
-        MESSAGES.ERROR.UNKNOWN_ACTION(toolName, String(action)),
+        MESSAGES.ERROR.UNKNOWN_ACTION(toolName, String(typedArgs.action)),
       );
     }
 
@@ -132,6 +141,7 @@ const TOOL_ROUTER_MAP = {
       update: (calendarsArgs) => handleUpdateCalendar(calendarsArgs),
       delete: (calendarsArgs) => handleDeleteCalendar(calendarsArgs),
     },
+    'read',
   ),
 } satisfies Record<ToolName, ToolRouter>;
 

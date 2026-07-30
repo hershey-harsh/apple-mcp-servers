@@ -24,8 +24,8 @@ describe('Tools Definitions', () => {
       },
       {
         name: 'calendar_calendars',
-        description: 'Reads calendar collections',
-        actions: ['read'],
+        description: 'Reads and manages calendar collections',
+        actions: ['read', 'create', 'update', 'delete'],
       },
     ])('should define $name tool with correct schema and actions', ({
       name,

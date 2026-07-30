@@ -37,7 +37,12 @@ Point your MCP client at each server's `start.sh`. For Claude Desktop, add entri
 
 ## Coordination between servers
 
-The servers are designed to be composed by the client. For example, to build a travel‑time aware reminder ("remind me when I need to leave"), ask `apple-maps` for the trip duration and use it to set a departure alarm on the reminder or event — see [`apple-events`](apple-events/) for a worked example.
+The servers are designed to be composed by the client — one server's output feeds another's input. Current cross‑server patterns (see [`apple-events`](apple-events/) for worked examples):
+
+- **Travel‑time "leave‑by" alarms** — `apple-maps` trip duration → a departure alarm on a reminder or event.
+- **Location / geofence alerts** — `apple-maps` place search → latitude/longitude for a reminder or event geofence alarm (alert on arrival or departure).
+- **Weather‑aware events** — an event's location → `apple-weather` forecast at the event time.
+- **Events & reminders from email** — an `apple-mail` message → a calendar event or reminder.
 
 ## License
 

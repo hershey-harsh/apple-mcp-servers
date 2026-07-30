@@ -28,7 +28,17 @@ const formatDateOnly = (date: Date): string => {
   return `${year}-${month}-${day}`;
 };
 
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 const parseDateInput = (value: string): Date | undefined => {
+  // A bare calendar date (YYYY-MM-DD) must be interpreted in LOCAL time: shiftDays
+  // and formatDateOnly both work in local time, whereas `new Date('YYYY-MM-DD')`
+  // parses as UTC midnight — which slips the date back a day when formatted in a
+  // negative-offset zone (e.g. 2026-02-11 + 14d rendered 2026-02-24 in EDT, not -25).
+  if (DATE_ONLY_PATTERN.test(value)) {
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
   const normalized = value.includes(' ') ? value.replace(' ', 'T') : value;
   const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;

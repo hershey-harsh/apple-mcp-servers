@@ -15,7 +15,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'reminders_tasks',
     description:
-      'Manages reminder tasks. Supports reading, creating, updating, and deleting reminders.',
+      'Manages reminder tasks. Supports reading, creating, updating, and deleting reminders. Cross-server: to turn an email into a reminder, fetch it with the Apple Mail MCP (search_emails / get_email_thread) and pass its subject and any due date here.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -95,7 +95,7 @@ export const TOOLS: Tool[] = [
               locationTrigger: {
                 type: 'object',
                 description:
-                  'Location-based (geofence) alarm. Equivalent to setting EKAlarm.structuredLocation + proximity.',
+                  'Location-based (geofence) alarm. Equivalent to setting EKAlarm.structuredLocation + proximity. Cross-server: get latitude/longitude for a place from the Apple Maps MCP place-search tool (maps_search_places), then set proximity "enter" to alert on arrival or "leave" to alert on departure.',
                 properties: {
                   title: {
                     type: 'string',
@@ -124,11 +124,21 @@ export const TOOLS: Tool[] = [
                 },
                 required: ['title', 'latitude', 'longitude', 'proximity'],
               },
+              soundName: {
+                type: 'string',
+                description:
+                  'Optional alarm ACTION (macOS-only): name of a system sound to play when the alarm fires (sets EKAlarm.soundName, making it an "audio" alarm). Example: "Basso", "Ping", "Glass". Mutually exclusive with emailAddress.',
+              },
+              emailAddress: {
+                type: 'string',
+                description:
+                  'Optional alarm ACTION (macOS-only): email address to notify when the alarm fires (sets EKAlarm.emailAddress, making it an "email" alarm). Takes precedence over soundName if both are given. Note: "procedure" (run-script / open-URL) alarms are intentionally unsupported — Apple deprecated them in OS X 10.9 and saving one errors.',
+              },
               alarmType: {
                 type: 'string',
                 enum: ['display', 'audio', 'procedure', 'email'],
                 description:
-                  'READ-ONLY: Alarm presentation type (EKAlarm.type). Determined automatically by EventKit: "display" shows notification, "audio" plays sound, "procedure" opens URL, "email" sends email. Cannot be set manually.',
+                  'READ-ONLY: Alarm presentation type (EKAlarm.type). Derived from the action fields: set soundName for "audio", emailAddress for "email"; with neither it is "display" (a notification). "procedure" is legacy and unsupported. Do not set this directly.',
               },
             },
           },
@@ -279,7 +289,7 @@ export const TOOLS: Tool[] = [
         locationTrigger: {
           type: 'object',
           description:
-            'Location trigger for geofence-based reminders. Reminder will fire when entering or leaving the specified location.',
+            'Location trigger for geofence-based reminders. Reminder will fire when entering or leaving the specified location. Cross-server: to turn a place name into latitude/longitude, use the Apple Maps MCP place-search tool (maps_search_places) — each result carries coordinates — then pass them here (proximity "enter" = arrive, "leave" = depart).',
           properties: {
             title: {
               type: 'string',
@@ -384,7 +394,7 @@ export const TOOLS: Tool[] = [
   {
     name: 'calendar_events',
     description:
-      'Manages calendar events (time blocks). Supports reading, creating, updating, and deleting calendar events.',
+      'Manages calendar events (time blocks). Supports reading, creating, updating, and deleting calendar events. Cross-server: to create an event from an email, fetch it with the Apple Mail MCP (search_emails / get_email_thread), extract the date/time, subject, and participants, then pass them here.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -421,12 +431,13 @@ export const TOOLS: Tool[] = [
         },
         location: {
           type: 'string',
-          description: 'Location for the event.',
+          description:
+            'Location for the event. Cross-server: for outdoor or travel events within ~16 days, pass this place name (or the structuredLocation coordinates) to the Apple Weather MCP get_forecast to check conditions at the event time; severe-weather alerts are US-only.',
         },
         structuredLocation: {
           type: 'object',
           description:
-            'Structured location for the event (EKEvent.structuredLocation). If provided, title is required.',
+            'Structured location for the event (EKEvent.structuredLocation). If provided, title is required. Cross-server: resolve a place name to latitude/longitude with the Apple Maps MCP place-search tool (maps_search_places), then pass the coordinates here so geofence alarms and one-tap navigation work.',
           properties: {
             title: {
               type: 'string',
@@ -481,7 +492,7 @@ export const TOOLS: Tool[] = [
               locationTrigger: {
                 type: 'object',
                 description:
-                  'Location-based (geofence) alarm. Equivalent to setting EKAlarm.structuredLocation + proximity.',
+                  'Location-based (geofence) alarm. Equivalent to setting EKAlarm.structuredLocation + proximity. Cross-server: get latitude/longitude for a place from the Apple Maps MCP place-search tool (maps_search_places), then set proximity "enter" to alert on arrival or "leave" to alert on departure.',
                 properties: {
                   title: {
                     type: 'string',
@@ -510,11 +521,21 @@ export const TOOLS: Tool[] = [
                 },
                 required: ['title', 'latitude', 'longitude', 'proximity'],
               },
+              soundName: {
+                type: 'string',
+                description:
+                  'Optional alarm ACTION (macOS-only): name of a system sound to play when the alarm fires (sets EKAlarm.soundName, making it an "audio" alarm). Example: "Basso", "Ping", "Glass". Mutually exclusive with emailAddress.',
+              },
+              emailAddress: {
+                type: 'string',
+                description:
+                  'Optional alarm ACTION (macOS-only): email address to notify when the alarm fires (sets EKAlarm.emailAddress, making it an "email" alarm). Takes precedence over soundName if both are given. Note: "procedure" (run-script / open-URL) alarms are intentionally unsupported — Apple deprecated them in OS X 10.9 and saving one errors.',
+              },
               alarmType: {
                 type: 'string',
                 enum: ['display', 'audio', 'procedure', 'email'],
                 description:
-                  'READ-ONLY: Alarm presentation type (EKAlarm.type). Determined automatically by EventKit: "display" shows notification, "audio" plays sound, "procedure" opens URL, "email" sends email. Cannot be set manually.',
+                  'READ-ONLY: Alarm presentation type (EKAlarm.type). Derived from the action fields: set soundName for "audio", emailAddress for "email"; with neither it is "display" (a notification). "procedure" is legacy and unsupported. Do not set this directly.',
               },
             },
           },
