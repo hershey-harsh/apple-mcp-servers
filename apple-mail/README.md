@@ -10,7 +10,7 @@ Part of the [Apple MCP Servers](../README.md) collection.
 - **Search** — search across accounts and mailboxes; find messages awaiting a reply or needing a response.
 - **Compose & reply** — compose new mail, reply, reply‑all, forward, **redirect** (re‑send preserving the original sender), and manage drafts (including rich‑text drafts).
 - **Organize** — move messages between mailboxes, create and **delete** mailboxes, mark read/unread, flag with colors, mark **junk / not junk**, and manage Trash.
-- **Attachments** — list, save, and export message attachments and sources.
+- **Attachments** — list, save, and export message attachments and sources, including `save_all_attachments` to file every match (filtered by sender, subject, or extension) into one directory in a single call, with collision‑safe naming and a per‑file report.
 - **Signatures** — list the signatures configured in Mail's settings.
 - **Analyze** — statistics, top senders, and account overviews.
 

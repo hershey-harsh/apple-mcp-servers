@@ -6,10 +6,56 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   CALENDAR_ACTIONS,
+  CALENDAR_BATCH_ACTIONS,
   DUE_WITHIN_OPTIONS,
   LIST_ACTIONS,
   REMINDER_ACTIONS,
+  REMINDER_BATCH_ACTIONS,
+  SCHEDULE_ACTIONS,
 } from '../types/index.js';
+
+/**
+ * Shared prose for the date fields. Every date parameter in this server accepts
+ * plain language, so the model never has to compute a timestamp itself.
+ */
+const DATE_HINT =
+  "Accepts 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss', ISO 8601, or plain language: 'today', 'tomorrow 3pm', 'next monday', 'friday at 17:00', 'in 2 hours', 'sep 8', '+3d', 'end of week'.";
+
+/** Reusable JSON Schema for a weekday list in EventKit's numbering. */
+const WEEKDAYS_PROPERTY = {
+  type: 'array' as const,
+  items: { type: 'integer' as const, minimum: 1, maximum: 7 },
+  description:
+    'Weekdays as 1=Sunday, 2=Monday … 7=Saturday. A Mon/Wed/Fri class is [2,4,6]; a Tue/Thu class is [3,5].',
+};
+
+/** Reusable alarm array schema, shared by the batch/class tools. */
+const ALARMS_PROPERTY = {
+  type: 'array' as const,
+  description:
+    'Alarms for the event. Each needs exactly one trigger: relativeOffset (seconds before start, negative), absoluteDate, or locationTrigger. Optionally add soundName or emailAddress to choose the action.',
+  items: {
+    type: 'object' as const,
+    properties: {
+      relativeOffset: {
+        type: 'number' as const,
+        description:
+          'Seconds relative to the start; negative fires before (-600 = 10 minutes before).',
+      },
+      absoluteDate: { type: 'string' as const, description: DATE_HINT },
+      soundName: {
+        type: 'string' as const,
+        description:
+          'System sound name for an audible alarm (e.g. "Basso", "Ping", "Glass").',
+      },
+      emailAddress: {
+        type: 'string' as const,
+        description:
+          'Send an email alarm to this address. Takes precedence over soundName.',
+      },
+    },
+  },
+};
 
 export const TOOLS: Tool[] = [
   {
@@ -270,6 +316,24 @@ export const TOOLS: Tool[] = [
                 type: 'array',
                 items: { type: 'integer' },
                 description: 'Months for yearly recurrence (1-12). Optional.',
+              },
+              weeksOfYear: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Weeks of the year (1-53). Negative counts back from year end (-1 = last week). Optional.',
+              },
+              daysOfYear: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Days of the year (1-366). Negative counts back from year end. Optional.',
+              },
+              setPositions: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Narrows the days the rule already matches to the Nth of each period (1=first, -1=last). "Last Friday of the month" = frequency monthly + daysOfWeek [6] + setPositions [-1]. "3rd Tuesday" = monthly + daysOfWeek [3] + setPositions [3]. Optional.',
               },
             },
             required: ['frequency'],
@@ -589,6 +653,24 @@ export const TOOLS: Tool[] = [
                 items: { type: 'integer' },
                 description: 'Months for yearly recurrence (1-12). Optional.',
               },
+              weeksOfYear: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Weeks of the year (1-53). Negative counts back from year end (-1 = last week). Optional.',
+              },
+              daysOfYear: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Days of the year (1-366). Negative counts back from year end. Optional.',
+              },
+              setPositions: {
+                type: 'array',
+                items: { type: 'integer' },
+                description:
+                  'Narrows the days the rule already matches to the Nth of each period (1=first, -1=last). "Last Friday of the month" = frequency monthly + daysOfWeek [6] + setPositions [-1]. "3rd Tuesday" = monthly + daysOfWeek [3] + setPositions [3]. Optional.',
+              },
             },
             required: ['frequency'],
           },
@@ -602,6 +684,11 @@ export const TOOLS: Tool[] = [
           enum: ['this-event', 'future-events'],
           description:
             'Scope for changes to recurring events: this-event or future-events.',
+        },
+        occurrenceDate: {
+          type: 'string',
+          description:
+            'Targets ONE occurrence of a recurring series instead of the first one. Without it, update/delete on a repeating event always hits the earliest occurrence. Pass the date of the meeting you mean (YYYY-MM-DD, or YYYY-MM-DD HH:mm:ss to disambiguate same-day repeats) together with span "this-event" to move or cancel just that one — e.g. one cancelled class, an exam moved to a different room. To cancel several dates at once (a holiday break) use calendar_batch action "cancel-occurrences".',
         },
         targetCalendar: {
           type: 'string',
@@ -698,6 +785,520 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ['action', 'reminderId'],
+    },
+  },
+  {
+    name: 'calendar_schedule',
+    description:
+      'Read-only planning over calendars and reminders. Three actions: "agenda" merges events and dated reminders into one chronological timeline (with overlap warnings and, optionally, the free gaps in each day); "free-slots" finds open time that satisfies a duration, a daily window, chosen weekdays and a buffer around existing commitments; "conflicts" checks proposed times against what is already booked before you create anything. Use this BEFORE calendar_events create — it is how you answer "when am I free", "does this clash", "what does my week look like". Defaults to "agenda" for the next 7 days when called with no arguments. Cross-server: pair free-slots with the Apple Maps travel-time tools when a slot has to allow for getting across campus, and with the Apple Weather forecast tools when the slot is for something outdoors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: SCHEDULE_ACTIONS,
+          description:
+            'agenda = merged timeline; free-slots = open time; conflicts = clash check for proposed slots. Defaults to agenda.',
+        },
+        startDate: {
+          type: 'string',
+          description: `Start of the window (agenda, free-slots). Defaults to today. ${DATE_HINT}`,
+        },
+        endDate: {
+          type: 'string',
+          description: `End of the window (agenda, free-slots). Defaults to 7 days after the start. ${DATE_HINT}`,
+        },
+        dayStart: {
+          type: 'string',
+          description:
+            "Earliest bookable time of day, 24-hour 'HH:mm'. Defaults to 09:00. Set '07:00' for early classes or '08:00' for a normal campus day.",
+        },
+        dayEnd: {
+          type: 'string',
+          description:
+            "Latest bookable time of day, 24-hour 'HH:mm'. Defaults to 18:00. Set '23:00' to include late-night study time.",
+        },
+        durationMinutes: {
+          type: 'integer',
+          description:
+            'free-slots: discard gaps shorter than this many minutes. Defaults to 30.',
+          default: 30,
+        },
+        bufferMinutes: {
+          type: 'integer',
+          description:
+            'free-slots: keep this many minutes clear either side of existing commitments (travel/settling time). Defaults to 0.',
+          default: 0,
+        },
+        daysOfWeek: WEEKDAYS_PROPERTY,
+        maxResults: {
+          type: 'integer',
+          description: 'free-slots: cap on returned slots. Defaults to 50.',
+          default: 50,
+        },
+        slots: {
+          type: 'array',
+          description:
+            'conflicts (REQUIRED): the proposed times to test. Each needs startDate and endDate; label is optional and echoed back.',
+          items: {
+            type: 'object',
+            properties: {
+              startDate: { type: 'string', description: DATE_HINT },
+              endDate: { type: 'string', description: DATE_HINT },
+              label: {
+                type: 'string',
+                description: 'Optional name for this slot in the report.',
+              },
+            },
+            required: ['startDate', 'endDate'],
+          },
+        },
+        includeReminders: {
+          type: 'boolean',
+          description:
+            'agenda: include dated reminders alongside events. Defaults to true.',
+          default: true,
+        },
+        includeCompletedReminders: {
+          type: 'boolean',
+          description: 'agenda: also show reminders already done. Defaults to false.',
+          default: false,
+        },
+        includeFreeGaps: {
+          type: 'boolean',
+          description:
+            'agenda: append the open gaps in each day. Defaults to false.',
+          default: false,
+        },
+        includeAllDayAsBusy: {
+          type: 'boolean',
+          description:
+            'Treat all-day events as blocking. Defaults to false, so an all-day "Reading Day" does not make the whole day unbookable.',
+          default: false,
+        },
+        respectAvailability: {
+          type: 'boolean',
+          description:
+            'When true (default), events marked free or cancelled do not block time.',
+          default: true,
+        },
+        filterCalendar: {
+          type: 'string',
+          description:
+            'Only consider this calendar. Omit to use every calendar — usually what you want for a true free/busy picture.',
+        },
+        filterAccount: {
+          type: 'string',
+          description: 'Only consider calendars from this account.',
+        },
+        search: {
+          type: 'string',
+          description: 'agenda: filter entries by title, notes, or location.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'calendar_batch',
+    description:
+      'Multi-event calendar writes, each reporting per-item success or failure instead of aborting on the first error. Actions: "create-events" adds many events in one call (a whole exam week, every advising appointment); "delete-events" removes many by ID; "cancel-occurrences" cancels specific meetings of ONE recurring series while leaving the rest intact (holidays, a cancelled class); "create-class-schedule" builds a full term from meeting patterns — weekly recurring events per class, with meetings that fall inside break ranges removed automatically; "schedule-study-blocks" finds real free time and books study sessions into it. Use create-class-schedule for semester setup and schedule-study-blocks for exam prep. Cross-server: resolve building names to coordinates with the Apple Maps place-search tool and pass them as structuredLocation so travel-time and arrival alerts work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: CALENDAR_BATCH_ACTIONS,
+          description: 'Which batch operation to run.',
+        },
+        events: {
+          type: 'array',
+          description:
+            'create-events (REQUIRED): the events to create. Each accepts the same fields as calendar_events create.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Event title.' },
+              startDate: { type: 'string', description: DATE_HINT },
+              endDate: { type: 'string', description: DATE_HINT },
+              note: { type: 'string', description: 'Notes body.' },
+              location: { type: 'string', description: 'Plain-text location.' },
+              structuredLocation: {
+                type: 'object',
+                description:
+                  'Geocoded location. Resolve coordinates with the Apple Maps place-search tool.',
+                properties: {
+                  title: { type: 'string' },
+                  latitude: { type: 'number' },
+                  longitude: { type: 'number' },
+                  radius: { type: 'number' },
+                },
+                required: ['title'],
+              },
+              url: { type: 'string', description: 'Associated URL.' },
+              isAllDay: { type: 'boolean' },
+              availability: {
+                type: 'string',
+                enum: ['not-supported', 'busy', 'free', 'tentative', 'unavailable'],
+              },
+              alarms: ALARMS_PROPERTY,
+              recurrenceRules: {
+                type: 'array',
+                description:
+                  'Recurrence rules; same shape as calendar_events (supports setPositions for "last Friday of the month").',
+                items: { type: 'object' },
+              },
+              targetCalendar: {
+                type: 'string',
+                description:
+                  'Calendar for this event; falls back to the top-level targetCalendar.',
+              },
+            },
+            required: ['title', 'startDate', 'endDate'],
+          },
+        },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'delete-events (REQUIRED): event IDs to delete.',
+        },
+        id: {
+          type: 'string',
+          description:
+            'cancel-occurrences (REQUIRED): the ID of the recurring series to cancel meetings from.',
+        },
+        occurrenceDates: {
+          type: 'array',
+          items: { type: 'string' },
+          description: `cancel-occurrences (REQUIRED): the dates to cancel. ${DATE_HINT}`,
+        },
+        termStart: {
+          type: 'string',
+          description: `create-class-schedule (REQUIRED): first day of term. ${DATE_HINT}`,
+        },
+        termEnd: {
+          type: 'string',
+          description: `create-class-schedule (REQUIRED): last day of term. ${DATE_HINT}`,
+        },
+        skipRanges: {
+          type: 'array',
+          description:
+            'create-class-schedule: breaks and holidays. Any class meeting inside a range is removed from its series. Inclusive of both ends.',
+          items: {
+            type: 'object',
+            properties: {
+              start: { type: 'string', description: DATE_HINT },
+              end: {
+                type: 'string',
+                description: `Last skipped day (same as start for a single day). ${DATE_HINT}`,
+              },
+              label: {
+                type: 'string',
+                description: 'Name of the break, e.g. "Thanksgiving".',
+              },
+            },
+            required: ['start', 'end'],
+          },
+        },
+        classes: {
+          type: 'array',
+          description:
+            'create-class-schedule (REQUIRED): one entry per class section.',
+          items: {
+            type: 'object',
+            properties: {
+              title: {
+                type: 'string',
+                description: 'e.g. "CS 245 Lecture" or "BIO 201 Lab".',
+              },
+              daysOfWeek: WEEKDAYS_PROPERTY,
+              startTime: {
+                type: 'string',
+                description: "Meeting start, 24-hour 'HH:mm' (e.g. '09:30').",
+              },
+              endTime: {
+                type: 'string',
+                description:
+                  "Meeting end, 24-hour 'HH:mm'. An end at or before the start is read as running past midnight.",
+              },
+              location: { type: 'string', description: 'Room or building.' },
+              structuredLocation: {
+                type: 'object',
+                description:
+                  'Geocoded building, for travel-time and arrival alerts.',
+                properties: {
+                  title: { type: 'string' },
+                  latitude: { type: 'number' },
+                  longitude: { type: 'number' },
+                  radius: { type: 'number' },
+                },
+                required: ['title'],
+              },
+              note: {
+                type: 'string',
+                description: 'Notes — instructor, office hours, section number.',
+              },
+              url: { type: 'string', description: 'Course page or meeting link.' },
+              alarms: ALARMS_PROPERTY,
+              availability: {
+                type: 'string',
+                enum: ['not-supported', 'busy', 'free', 'tentative', 'unavailable'],
+                description: 'Defaults to busy so classes block free-slot searches.',
+              },
+              interval: {
+                type: 'integer',
+                description:
+                  'Meets every N weeks. Defaults to 1; use 2 for a biweekly lab.',
+                default: 1,
+              },
+            },
+            required: ['title', 'daysOfWeek', 'startTime', 'endTime'],
+          },
+        },
+        title: {
+          type: 'string',
+          description:
+            'schedule-study-blocks (REQUIRED): block title, e.g. "Study: CHEM 110 midterm".',
+        },
+        totalMinutes: {
+          type: 'integer',
+          description:
+            'schedule-study-blocks (REQUIRED): total study time to place across the window.',
+        },
+        blockMinutes: {
+          type: 'integer',
+          description:
+            'schedule-study-blocks: length of each session. Defaults to 90.',
+          default: 90,
+        },
+        maxBlocksPerDay: {
+          type: 'integer',
+          description: 'schedule-study-blocks: per-day cap. Defaults to 2.',
+          default: 2,
+        },
+        startDate: {
+          type: 'string',
+          description: `schedule-study-blocks: window start. Defaults to now. ${DATE_HINT}`,
+        },
+        endDate: {
+          type: 'string',
+          description: `schedule-study-blocks: window end (e.g. the day before the exam). Defaults to 7 days out. ${DATE_HINT}`,
+        },
+        dayStart: {
+          type: 'string',
+          description:
+            "schedule-study-blocks: earliest time of day, 'HH:mm'. Defaults to 09:00.",
+        },
+        dayEnd: {
+          type: 'string',
+          description:
+            "schedule-study-blocks: latest time of day, 'HH:mm'. Defaults to 18:00.",
+        },
+        daysOfWeek: WEEKDAYS_PROPERTY,
+        bufferMinutes: {
+          type: 'integer',
+          description:
+            'schedule-study-blocks: gap kept around existing commitments and between blocks. Defaults to 10.',
+          default: 10,
+        },
+        dryRun: {
+          type: 'boolean',
+          description:
+            'schedule-study-blocks: return the plan without creating anything. Defaults to false.',
+          default: false,
+        },
+        note: {
+          type: 'string',
+          description: 'schedule-study-blocks: notes applied to every block.',
+        },
+        location: {
+          type: 'string',
+          description: 'schedule-study-blocks: location applied to every block.',
+        },
+        alarms: ALARMS_PROPERTY,
+        availability: {
+          type: 'string',
+          enum: ['not-supported', 'busy', 'free', 'tentative', 'unavailable'],
+          description: 'Availability for created events. Defaults to busy.',
+        },
+        includeAllDayAsBusy: {
+          type: 'boolean',
+          description:
+            'Treat all-day events as blocking when looking for free time. Defaults to false.',
+          default: false,
+        },
+        respectAvailability: {
+          type: 'boolean',
+          description:
+            'When true (default), events marked free or cancelled do not block.',
+          default: true,
+        },
+        span: {
+          type: 'string',
+          enum: ['this-event', 'future-events'],
+          description:
+            'delete-events: scope when an ID belongs to a recurring series. Defaults to this-event.',
+        },
+        targetCalendar: {
+          type: 'string',
+          description:
+            'Default calendar for anything created. Omit to use the system default calendar.',
+        },
+        filterCalendar: {
+          type: 'string',
+          description:
+            'Restrict the busy-time lookup to one calendar when finding study time.',
+        },
+        filterAccount: {
+          type: 'string',
+          description: 'Restrict the busy-time lookup to one account.',
+        },
+        skipConflicts: {
+          type: 'boolean',
+          description:
+            'create-events: skip any event that would overlap something already booked, reporting it as skipped. Defaults to false.',
+          default: false,
+        },
+        continueOnError: {
+          type: 'boolean',
+          description:
+            'Keep going after an item fails and report every outcome. Defaults to true.',
+          default: true,
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'reminders_batch',
+    description:
+      'Multi-reminder writes with per-item results: "create" adds many reminders at once (a semester of assignment deadlines from a syllabus, every task from one email thread), "update" edits many, "complete" ticks off or re-opens many, "delete" removes many. complete and delete accept plain titles as well as IDs, so you do not need to look an ID up first — titles are matched case-insensitively and every match is acted on. Cross-server: build the list from the Apple Mail search tools when deadlines arrive by email, or from an Apple Notes page when they live in lecture notes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: REMINDER_BATCH_ACTIONS,
+          description: 'Which batch operation to run.',
+        },
+        reminders: {
+          type: 'array',
+          description:
+            'create (REQUIRED): the reminders to create. Each accepts the same fields as reminders_tasks create.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Reminder title.' },
+              dueDate: { type: 'string', description: DATE_HINT },
+              startDate: { type: 'string', description: DATE_HINT },
+              note: { type: 'string', description: 'Notes body.' },
+              url: { type: 'string', description: 'Associated URL.' },
+              location: { type: 'string', description: 'Plain-text location.' },
+              priority: {
+                type: 'integer',
+                enum: [0, 1, 5, 9],
+                description: '0 none, 1 high, 5 medium, 9 low.',
+              },
+              completed: { type: 'boolean' },
+              alarms: ALARMS_PROPERTY,
+              recurrenceRules: {
+                type: 'array',
+                description: 'Recurrence rules; same shape as reminders_tasks.',
+                items: { type: 'object' },
+              },
+              locationTrigger: {
+                type: 'object',
+                description:
+                  'Geofence trigger. Resolve coordinates with the Apple Maps place-search tool; proximity "enter" fires on arrival, "leave" on departure.',
+                properties: {
+                  title: { type: 'string' },
+                  latitude: { type: 'number' },
+                  longitude: { type: 'number' },
+                  radius: { type: 'number' },
+                  proximity: { type: 'string', enum: ['enter', 'leave'] },
+                },
+                required: ['title', 'latitude', 'longitude', 'proximity'],
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Tags stored in the notes as [#tag].',
+              },
+              subtasks: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Initial subtask titles.',
+              },
+              targetList: {
+                type: 'string',
+                description:
+                  'List for this reminder; falls back to the top-level targetList.',
+              },
+            },
+            required: ['title'],
+          },
+        },
+        updates: {
+          type: 'array',
+          description:
+            'update (REQUIRED): each entry needs an id plus the fields to change.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Reminder ID (REQUIRED).' },
+              title: { type: 'string', description: 'New title.' },
+              dueDate: { type: 'string', description: DATE_HINT },
+              startDate: { type: 'string', description: DATE_HINT },
+              note: { type: 'string' },
+              url: { type: 'string' },
+              location: { type: 'string' },
+              completed: { type: 'boolean' },
+              completionDate: { type: 'string', description: DATE_HINT },
+              priority: { type: 'integer', enum: [0, 1, 5, 9] },
+              alarms: ALARMS_PROPERTY,
+              clearAlarms: { type: 'boolean' },
+              clearRecurrence: { type: 'boolean' },
+              clearLocationTrigger: { type: 'boolean' },
+              targetList: { type: 'string', description: 'Move to this list.' },
+            },
+            required: ['id'],
+          },
+        },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'complete/delete: reminder IDs to act on.',
+        },
+        titles: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'complete/delete: exact reminder titles to act on, matched case-insensitively. Every match is acted on, so narrow with filterList if a title repeats across lists.',
+        },
+        filterList: {
+          type: 'string',
+          description:
+            'complete/delete: only match reminders in this list when resolving titles.',
+        },
+        completed: {
+          type: 'boolean',
+          description:
+            'complete: true marks done (default), false re-opens the reminders.',
+          default: true,
+        },
+        targetList: {
+          type: 'string',
+          description:
+            'create: default list for reminders that do not name their own.',
+        },
+        continueOnError: {
+          type: 'boolean',
+          description:
+            'Keep going after an item fails and report every outcome. Defaults to true.',
+          default: true,
+        },
+      },
+      required: ['action'],
     },
   },
 ];

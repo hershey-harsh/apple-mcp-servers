@@ -5,6 +5,7 @@ import {
   ListPromptsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { registerHandlers } from './handlers.js';
+import { buildPromptResponse, getPromptDefinition } from './prompts.js';
 
 // Mock server type for testing - simplified for test compatibility
 interface MockServer {
@@ -160,7 +161,7 @@ describe('Server Handlers', () => {
 
         expect(result).toHaveProperty('prompts');
         expect(Array.isArray(result.prompts)).toBe(true);
-        expect(result.prompts.length).toBe(4);
+        expect(result.prompts.length).toBe(8);
 
         // Check if all expected prompts are present
         const promptNames = result.prompts.map((p: MockPrompt) => p.name);
@@ -168,6 +169,27 @@ describe('Server Handlers', () => {
         expect(promptNames).toContain('smart-reminder-creator');
         expect(promptNames).toContain('reminder-review-assistant');
         expect(promptNames).toContain('weekly-planning-workflow');
+        // Multi-server college workflows
+        expect(promptNames).toContain('semester-setup');
+        expect(promptNames).toContain('exam-prep-plan');
+        expect(promptNames).toContain('assignment-triage');
+        expect(promptNames).toContain('campus-day-check');
+      });
+
+      test('every prompt builds a non-empty message from empty args', async () => {
+        const result = await listPromptsHandler();
+
+        for (const prompt of result.prompts as MockPrompt[]) {
+          const template = getPromptDefinition(prompt.name);
+          expect(template).toBeDefined();
+          const response = buildPromptResponse(
+            template as NonNullable<typeof template>,
+            {},
+          );
+          expect(response.messages.length).toBeGreaterThan(0);
+          expect(response.messages[0].content.text.length).toBeGreaterThan(50);
+          expect(response.description.length).toBeGreaterThan(0);
+        }
       });
     });
 

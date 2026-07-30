@@ -117,10 +117,20 @@ describe('ValidationSchemas', () => {
       });
 
       it('should reject invalid date formats', () => {
-        expect(() => SafeDateSchema.parse('01/15/2024')).toThrow();
         expect(() => SafeDateSchema.parse('not-a-date')).toThrow();
+        expect(() => SafeDateSchema.parse('sometime next semester')).toThrow();
         // Note: DATE_PATTERN only checks basic format, doesn't validate date ranges
         expect(() => SafeDateSchema.parse('2024-13-45')).not.toThrow();
+      });
+
+      it('should normalize plain-language and slash dates', () => {
+        // Slash dates are read month-first and rewritten to the canonical form.
+        expect(SafeDateSchema.parse('01/15/2024')).toBe('2024-01-15');
+        // Relative phrasing resolves rather than erroring out.
+        expect(SafeDateSchema.parse('tomorrow 3pm')).toMatch(
+          /^\d{4}-\d{2}-\d{2} 15:00:00$/,
+        );
+        expect(SafeDateSchema.parse('next monday')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       });
     });
 

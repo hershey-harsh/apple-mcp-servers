@@ -118,6 +118,15 @@ const formatRecurrence = (recurrence: RecurrenceRule): string => {
           `on day${recurrence.daysOfMonth.length > 1 ? 's' : ''} ${recurrence.daysOfMonth.join(', ')}`,
         );
       }
+      // Weekday-of-month rules ("last Friday") live in daysOfWeek + setPositions,
+      // which used to be invisible here — leaving the display indistinguishable
+      // from a plain monthly repeat.
+      if (recurrence.daysOfWeek?.length) {
+        const dayNames = ['', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        parts.push(
+          `on ${recurrence.daysOfWeek.map((d) => dayNames[d]).join(', ')}`,
+        );
+      }
       break;
     case 'yearly':
       parts.push(`${interval}year${recurrence.interval > 1 ? 's' : ''}`);
@@ -147,6 +156,28 @@ const formatRecurrence = (recurrence: RecurrenceRule): string => {
       const exhaustiveCheck: never = recurrence.frequency;
       throw new Error(`Unknown recurrence frequency: ${exhaustiveCheck}`);
     }
+  }
+
+  // setPositions narrows the matches to the Nth in each period, so it has to be
+  // shown or "last Friday of the month" reads back as an ordinary monthly repeat.
+  if (recurrence.setPositions?.length) {
+    const ordinal = (position: number): string => {
+      if (position === -1) return 'last';
+      if (position === -2) return '2nd-to-last';
+      const suffixes: Record<number, string> = { 1: 'st', 2: 'nd', 3: 'rd' };
+      return position > 0
+        ? `${position}${suffixes[position] ?? 'th'}`
+        : `${Math.abs(position)}-from-last`;
+    };
+    parts.push(`[${recurrence.setPositions.map(ordinal).join(', ')}]`);
+  }
+
+  if (recurrence.weeksOfYear?.length) {
+    parts.push(`weeks ${recurrence.weeksOfYear.join(', ')}`);
+  }
+
+  if (recurrence.daysOfYear?.length) {
+    parts.push(`year-days ${recurrence.daysOfYear.join(', ')}`);
   }
 
   if (recurrence.endDate) {

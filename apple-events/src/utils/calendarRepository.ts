@@ -280,13 +280,19 @@ class CalendarRepository {
     addOptionalJsonArg(args, '--recurrenceRules', data.recurrenceRules);
     addOptionalBooleanArg(args, '--clearRecurrence', data.clearRecurrence);
     addOptionalArg(args, '--span', data.span);
+    addOptionalArg(args, '--occurrenceDate', data.occurrenceDate);
 
     return executeCli<EventJSON>(args);
   }
 
-  async deleteEvent(id: string, span?: string): Promise<void> {
+  async deleteEvent(
+    id: string,
+    span?: string,
+    occurrenceDate?: string,
+  ): Promise<void> {
     const args = ['--action', 'delete-event', '--id', id];
     addOptionalArg(args, '--span', span);
+    addOptionalArg(args, '--occurrenceDate', occurrenceDate);
     await executeCli<unknown>(args);
   }
 }

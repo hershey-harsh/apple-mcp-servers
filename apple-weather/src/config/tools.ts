@@ -16,6 +16,7 @@
  */
 export type ToolName =
   | 'get_forecast'
+  | 'find_weather_window'
   | 'get_current_conditions'
   | 'get_alerts'
   | 'get_historical_weather'
@@ -45,6 +46,7 @@ const TOOL_PRESETS: Record<string, ToolName[]> = {
   basic: [
     'get_weather_summary',
     'get_forecast',
+    'find_weather_window',
     'get_current_conditions',
     'get_alerts',
     'search_location',
@@ -55,6 +57,7 @@ const TOOL_PRESETS: Record<string, ToolName[]> = {
   standard: [
     'get_weather_summary',
     'get_forecast',
+    'find_weather_window',
     'get_current_conditions',
     'get_alerts',
     'get_historical_weather',
@@ -71,6 +74,7 @@ const TOOL_PRESETS: Record<string, ToolName[]> = {
   full: [
     'get_weather_summary',
     'get_forecast',
+    'find_weather_window',
     'get_current_conditions',
     'get_alerts',
     'get_historical_weather',
@@ -92,6 +96,7 @@ const TOOL_PRESETS: Record<string, ToolName[]> = {
   all: [
     'get_weather_summary',
     'get_forecast',
+    'find_weather_window',
     'get_current_conditions',
     'get_alerts',
     'get_historical_weather',
@@ -115,6 +120,8 @@ const TOOL_PRESETS: Record<string, ToolName[]> = {
  */
 const TOOL_ALIASES: Record<string, ToolName> = {
   'forecast': 'get_forecast',
+  'window': 'find_weather_window',
+  'weather_window': 'find_weather_window',
   'current': 'get_current_conditions',
   'conditions': 'get_current_conditions',
   'alerts': 'get_alerts',

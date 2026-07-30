@@ -15,6 +15,18 @@ export {
 } from './calendarHandlers.js';
 
 export {
+  handleBatchCompleteReminders,
+  handleBatchCreateEvents,
+  handleBatchCreateReminders,
+  handleBatchDeleteEvents,
+  handleBatchDeleteReminders,
+  handleBatchUpdateReminders,
+  handleCancelOccurrences,
+  handleCreateClassSchedule,
+  handleScheduleStudyBlocks,
+} from './batchHandlers.js';
+
+export {
   handleCreateReminderList,
   handleDeleteReminderList,
   handleReadReminderLists,
@@ -26,6 +38,12 @@ export {
   handleReadReminders,
   handleUpdateReminder,
 } from './reminderHandlers.js';
+
+export {
+  handleAgenda,
+  handleConflicts,
+  handleFreeSlots,
+} from './scheduleHandlers.js';
 
 export {
   handleCreateSubtask,

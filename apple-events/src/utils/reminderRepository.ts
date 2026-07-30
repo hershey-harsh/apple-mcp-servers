@@ -67,6 +67,9 @@ class ReminderRepository {
       daysOfWeek: rule.daysOfWeek ?? undefined,
       daysOfMonth: rule.daysOfMonth ?? undefined,
       monthsOfYear: rule.monthsOfYear ?? undefined,
+      weeksOfYear: rule.weeksOfYear ?? undefined,
+      daysOfYear: rule.daysOfYear ?? undefined,
+      setPositions: rule.setPositions ?? undefined,
     });
 
     // Map recurrence rules from JSON (convert nulls to undefined, default interval to 1)

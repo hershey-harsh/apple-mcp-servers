@@ -14,6 +14,9 @@ export interface RecurrenceRuleJSON {
   daysOfWeek?: number[] | null; // 1 = Sunday, 7 = Saturday
   daysOfMonth?: number[] | null; // 1-31
   monthsOfYear?: number[] | null; // 1-12
+  weeksOfYear?: number[] | null; // 1-53, negative counts back from year end
+  daysOfYear?: number[] | null; // 1-366, negative counts back from year end
+  setPositions?: number[] | null; // Nth match in each period; -1 = last
 }
 
 /**
@@ -201,4 +204,6 @@ export interface UpdateEventData {
   recurrenceRules?: RecurrenceRuleJSON[];
   clearRecurrence?: boolean;
   span?: 'this-event' | 'future-events';
+  /** Targets a single occurrence of a recurring series rather than the first one. */
+  occurrenceDate?: string;
 }

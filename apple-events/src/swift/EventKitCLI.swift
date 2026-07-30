@@ -271,6 +271,12 @@ struct RecurrenceRuleJSON: Codable {
     let daysOfWeek: [Int]?     // 1 = Sunday, 7 = Saturday
     let daysOfMonth: [Int]?    // 1-31
     let monthsOfYear: [Int]?   // 1-12
+    let weeksOfYear: [Int]?    // 1-53, or negative to count back from the year's end
+    let daysOfYear: [Int]?     // 1-366, or negative to count back from the year's end
+    // Narrows the days the rule already matches to the Nth of each period
+    // (1 = first, -1 = last). "Last Friday of the month" is
+    // frequency=monthly + daysOfWeek=[6] + setPositions=[-1].
+    let setPositions: [Int]?
 }
 
 private func recurrenceRuleFromJSON(_ rule: RecurrenceRuleJSON) -> EKRecurrenceRule? {
@@ -304,6 +310,12 @@ private func recurrenceRuleFromJSON(_ rule: RecurrenceRuleJSON) -> EKRecurrenceR
         ekMonthsOfYear = months.map { NSNumber(value: $0) }
     }
 
+    // Build weeks/days of year and set positions. EventKit treats an empty array
+    // differently from nil, so only pass non-empty ones through.
+    let ekWeeksOfYear: [NSNumber]? = rule.weeksOfYear.flatMap { $0.isEmpty ? nil : $0.map { NSNumber(value: $0) } }
+    let ekDaysOfYear: [NSNumber]? = rule.daysOfYear.flatMap { $0.isEmpty ? nil : $0.map { NSNumber(value: $0) } }
+    let ekSetPositions: [NSNumber]? = rule.setPositions.flatMap { $0.isEmpty ? nil : $0.map { NSNumber(value: $0) } }
+
     // Build recurrence end
     var recurrenceEnd: EKRecurrenceEnd?
     if let endDateStr = rule.endDate, let endDate = parseDate(from: endDateStr) {
@@ -318,9 +330,9 @@ private func recurrenceRuleFromJSON(_ rule: RecurrenceRuleJSON) -> EKRecurrenceR
         daysOfTheWeek: ekDaysOfWeek,
         daysOfTheMonth: ekDaysOfMonth,
         monthsOfTheYear: ekMonthsOfYear,
-        weeksOfTheYear: nil,
-        daysOfTheYear: nil,
-        setPositions: nil,
+        weeksOfTheYear: ekWeeksOfYear,
+        daysOfTheYear: ekDaysOfYear,
+        setPositions: ekSetPositions,
         end: recurrenceEnd
     )
 }
@@ -378,7 +390,10 @@ private func recurrenceRuleToJSON(_ ekRule: EKRecurrenceRule) -> RecurrenceRuleJ
         occurrenceCount: (occurrenceCount != nil && occurrenceCount! > 0) ? occurrenceCount : nil,
         daysOfWeek: daysOfWeek,
         daysOfMonth: daysOfMonth,
-        monthsOfYear: monthsOfYear
+        monthsOfYear: monthsOfYear,
+        weeksOfYear: ekRule.weeksOfTheYear?.map { $0.intValue },
+        daysOfYear: ekRule.daysOfTheYear?.map { $0.intValue },
+        setPositions: ekRule.setPositions?.map { $0.intValue }
     )
 }
 
@@ -1086,12 +1101,53 @@ class RemindersManager {
     private func findEvent(withId id: String) -> EKEvent? {
         return eventStore.event(withIdentifier: id)
     }
-    
-    func updateEvent(id: String, title: String?, calendarName: String?, startDateString: String?, endDateString: String?, notes: String?, location: String?, structuredLocationJSON: String?, urlString: String?, isAllDay: Bool?, availability: String?, alarmsJSON: String?, clearAlarms: Bool?, recurrenceRulesJSON: String?, clearRecurrence: Bool?, span: String?) throws -> EventJSON {
-        guard let event = findEvent(withId: id) else {
+
+    /// Resolves a specific occurrence of a (possibly recurring) event.
+    ///
+    /// `eventStore.event(withIdentifier:)` always hands back the FIRST occurrence of a
+    /// series, so editing or cancelling "the one on the 14th" is impossible through it.
+    /// When an occurrenceDate is supplied we instead fetch the expanded occurrences in a
+    /// window around that date and pick the one that matches.
+    private func findEventOccurrence(withId id: String, occurrenceDate: String?) throws -> EKEvent? {
+        guard let occurrenceString = occurrenceDate, !occurrenceString.isEmpty else {
+            return findEvent(withId: id)
+        }
+        guard let target = parseDate(from: occurrenceString) else {
+            throw NSError(domain: "", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid occurrenceDate format. Use 'YYYY-MM-DD' or 'YYYY-MM-DD HH:mm:ss'."])
+        }
+
+        // Widen by a day on each side so all-day events and timezone-shifted starts
+        // still land inside the window.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone.current
+        let windowStart = calendar.date(byAdding: .day, value: -1, to: target) ?? target
+        let windowEnd = calendar.date(byAdding: .day, value: 2, to: target) ?? target
+
+        let predicate = eventStore.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: nil)
+        let matches = eventStore.events(matching: predicate).filter {
+            $0.eventIdentifier == id || $0.calendarItemIdentifier == id
+        }
+        if matches.isEmpty { return nil }
+
+        // A date-only occurrenceDate means "the occurrence on that calendar day";
+        // a date+time one means "the occurrence starting closest to that instant".
+        if !occurrenceString.contains(":"),
+           let sameDay = matches.first(where: { calendar.isDate($0.startDate, inSameDayAs: target) }) {
+            return sameDay
+        }
+        return matches.min {
+            abs($0.startDate.timeIntervalSince(target)) < abs($1.startDate.timeIntervalSince(target))
+        }
+    }
+
+    func updateEvent(id: String, title: String?, calendarName: String?, startDateString: String?, endDateString: String?, notes: String?, location: String?, structuredLocationJSON: String?, urlString: String?, isAllDay: Bool?, availability: String?, alarmsJSON: String?, clearAlarms: Bool?, recurrenceRulesJSON: String?, clearRecurrence: Bool?, span: String?, occurrenceDate: String?) throws -> EventJSON {
+        guard let event = try findEventOccurrence(withId: id, occurrenceDate: occurrenceDate) else {
+            if let occurrence = occurrenceDate, !occurrence.isEmpty {
+                throw NSError(domain: "", code: 404, userInfo: [NSLocalizedDescriptionKey: "No occurrence of event '\(id)' found on \(occurrence). Read the event's date range first to confirm the occurrence exists."])
+            }
             throw NSError(domain: "", code: 404, userInfo: [NSLocalizedDescriptionKey: "Event with ID '\(id)' not found."])
         }
-        
+
         if let newTitle = title { event.title = newTitle }
         if let newCalendar = calendarName { event.calendar = try findCalendar(named: newCalendar) }
         
@@ -1177,8 +1233,11 @@ class RemindersManager {
         return event.toJSON()
     }
     
-    func deleteEvent(id: String, span: String?) throws {
-        guard let event = findEvent(withId: id) else {
+    func deleteEvent(id: String, span: String?, occurrenceDate: String?) throws {
+        guard let event = try findEventOccurrence(withId: id, occurrenceDate: occurrenceDate) else {
+            if let occurrence = occurrenceDate, !occurrence.isEmpty {
+                throw NSError(domain: "", code: 404, userInfo: [NSLocalizedDescriptionKey: "No occurrence of event '\(id)' found on \(occurrence). Read the event's date range first to confirm the occurrence exists."])
+            }
             throw NSError(domain: "", code: 404, userInfo: [NSLocalizedDescriptionKey: "Event with ID '\(id)' not found."])
         }
         let removeSpan: EKSpan = (span?.lowercased() == "future-events") ? .futureEvents : .thisEvent
@@ -1683,12 +1742,13 @@ func main() {
                     clearAlarms: parser.get("clearAlarms").map { $0 == "true" },
                     recurrenceRulesJSON: parser.get("recurrenceRules"),
                     clearRecurrence: parser.get("clearRecurrence").map { $0 == "true" },
-                    span: parser.get("span")
+                    span: parser.get("span"),
+                    occurrenceDate: parser.get("occurrenceDate")
                 )
                 print(String(data: try encoder.encode(StandardOutput(result: event)), encoding: .utf8)!)
             case "delete-event":
                 guard let id = parser.get("id") else { throw NSError(domain: "", code: 400, userInfo: [NSLocalizedDescriptionKey: "--id required."]) }
-                try manager.deleteEvent(id: id, span: parser.get("span")); print(String(data: try encoder.encode(StandardOutput(result: DeleteResult(id: id))), encoding: .utf8)!)
+                try manager.deleteEvent(id: id, span: parser.get("span"), occurrenceDate: parser.get("occurrenceDate")); print(String(data: try encoder.encode(StandardOutput(result: DeleteResult(id: id))), encoding: .utf8)!)
             default: throw NSError(domain: "", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid or missing --action."])
             }
         } catch { outputError(error.localizedDescription) }

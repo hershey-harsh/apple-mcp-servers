@@ -6,7 +6,7 @@ Part of the [Apple MCP Servers](../README.md) collection.
 
 ## Capabilities
 
-- **Read** — recent messages, individual chats, and group conversations.
+- **Read** — recent messages, individual chats, and group conversations. `tool_get_chats` lists **unnamed** group chats too, labelling them by their participants — most group threads are never given a name, and excluding them previously made them impossible to find or message. Supports a `search` filter and a `limit`.
 - **Search** — plain and fuzzy search across message history; search attachments.
 - **Send** — send a message to a contact or phone number/handle.
 - **Contacts** — look up contacts and check iMessage availability for a handle.

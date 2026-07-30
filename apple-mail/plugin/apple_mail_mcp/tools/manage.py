@@ -239,6 +239,267 @@ def move_email(
     return result
 
 
+#: Directories that must never receive a downloaded attachment, even though they
+#: live under the user's home. Shared by every attachment-saving tool.
+_SENSITIVE_SUBDIRS = (
+    ".ssh",
+    ".gnupg",
+    ".config",
+    ".aws",
+    ".claude",
+    os.path.join("Library", "LaunchAgents"),
+    os.path.join("Library", "LaunchDaemons"),
+    os.path.join("Library", "Keychains"),
+)
+
+
+def _validate_save_path(save_path: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve and vet a destination path.
+
+    Returns ``(resolved_path, None)`` when the path is acceptable, or
+    ``(None, error_message)`` when it is not. Keeping this in one place means the
+    single-file and bulk savers cannot drift apart on what counts as safe.
+    """
+    expanded_path = os.path.expanduser(save_path)
+    resolved_path = os.path.realpath(expanded_path)
+    home_dir = os.path.expanduser("~")
+
+    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
+        return None, (
+            f"Error: Save path must be under your home directory ({home_dir}). "
+            f"Got: {resolved_path}"
+        )
+
+    for subdir in _SENSITIVE_SUBDIRS:
+        sensitive_dir = os.path.join(home_dir, subdir)
+        if (
+            resolved_path.startswith(sensitive_dir + os.sep)
+            or resolved_path == sensitive_dir
+        ):
+            return None, (
+                f"Error: Cannot save attachments to sensitive directory: {sensitive_dir}"
+            )
+
+    return resolved_path, None
+
+
+@mcp.tool()
+@inject_preferences
+def save_all_attachments(
+    account: str,
+    save_directory: str,
+    subject_keyword: str = "",
+    sender_keyword: str = "",
+    extensions: str = "",
+    mailbox: str = "",
+    max_emails: int = 50,
+    max_attachments: int = 100,
+) -> str:
+    """
+    Save every attachment matching a filter to a directory, in one call.
+
+    Built for grabbing a whole set of files at once — every syllabus from a
+    professor, all the PDFs in a course thread, a semester of handouts — instead of
+    calling save_email_attachment once per file with a name you had to look up first.
+    Any filter left empty is simply not applied, so passing only sender_keyword saves
+    everything that person sent.
+
+    The directory is created if it does not exist. A file whose name is already taken
+    is saved with a numeric suffix rather than overwriting. Attachments that fail to
+    save are reported individually and do not stop the rest.
+
+    Args:
+        account: Account name (e.g., "Gmail", "Work", "Personal")
+        save_directory: Directory to save into. Must be under your home directory.
+        subject_keyword: Only consider emails whose subject contains this (optional)
+        sender_keyword: Only consider emails whose sender contains this (optional)
+        extensions: Comma-separated extensions to keep, e.g. "pdf,docx" (optional,
+            case-insensitive; omit to save every attachment)
+        mailbox: Mailbox name to scan; defaults to the account's inbox (optional)
+        max_emails: Most recent emails to scan, 1-500 (default 50)
+        max_attachments: Cap on files saved, 1-500 (default 100)
+
+    Returns:
+        A per-file report of what was saved, skipped, or failed.
+    """
+    resolved_dir, error = _validate_save_path(save_directory)
+    if error:
+        return error
+
+    try:
+        max_emails = max(1, min(500, int(max_emails)))
+        max_attachments = max(1, min(500, int(max_attachments)))
+    except (TypeError, ValueError):
+        return "Error: max_emails and max_attachments must be whole numbers."
+
+    # Create up front so AppleScript's `save` has a real destination.
+    try:
+        os.makedirs(resolved_dir, exist_ok=True)
+    except OSError as exc:
+        return f"Error: Could not create directory {resolved_dir}: {exc}"
+    if not os.path.isdir(resolved_dir):
+        return f"Error: {resolved_dir} exists but is not a directory."
+
+    wanted_exts = [
+        ext.strip().lower().lstrip(".")
+        for ext in extensions.split(",")
+        if ext.strip()
+    ]
+
+    escaped_account = escape_applescript(account)
+    escaped_dir = escape_applescript(resolved_dir)
+
+    mailbox_setup = (
+        f'set targetMailbox to mailbox "{escape_applescript(mailbox)}" of targetAccount'
+        if mailbox
+        else inbox_mailbox_script("targetMailbox", "targetAccount")
+    )
+
+    subject_filter = (
+        f'if messageSubject does not contain "{escape_applescript(subject_keyword)}" then error "skip"'
+        if subject_keyword
+        else ""
+    )
+    sender_filter = (
+        f'if messageSender does not contain "{escape_applescript(sender_keyword)}" then error "skip"'
+        if sender_keyword
+        else ""
+    )
+
+    # AppleScript reports the candidates; Python does the extension filtering,
+    # de-duplication, and reporting where that logic is far easier to get right.
+    script = f'''
+    tell application "Mail"
+        set outputText to ""
+        try
+            set targetAccount to account "{escaped_account}"
+            {mailbox_setup}
+            set allMessages to every message of targetMailbox
+            set messageCount to count of allMessages
+            set scanLimit to {max_emails}
+            if messageCount < scanLimit then set scanLimit to messageCount
+
+            repeat with i from 1 to scanLimit
+                try
+                    set aMessage to item i of allMessages
+                    set messageSubject to subject of aMessage
+                    set messageSender to sender of aMessage
+                    {subject_filter}
+                    {sender_filter}
+                    set msgAttachments to mail attachments of aMessage
+                    repeat with anAttachment in msgAttachments
+                        try
+                            set outputText to outputText & "ATTACHMENT\t" & (name of anAttachment) & "\t" & messageSubject & "\t" & messageSender & "\t" & i & return
+                        end try
+                    end repeat
+                end try
+            end repeat
+            return outputText
+        on error errMsg
+            return "Error: " & errMsg & return & "Check that the account and mailbox names are correct."
+        end try
+    end tell
+    '''
+
+    listing = run_applescript(script, timeout=300)
+    if listing.startswith("Error:"):
+        return listing
+
+    candidates = []
+    for line in listing.splitlines():
+        if not line.startswith("ATTACHMENT\t"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        _, name, subject, sender, index = parts[:5]
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if wanted_exts and ext not in wanted_exts:
+            continue
+        candidates.append(
+            {"name": name, "subject": subject, "sender": sender, "index": index}
+        )
+
+    if not candidates:
+        filters = []
+        if subject_keyword:
+            filters.append(f'subject contains "{subject_keyword}"')
+        if sender_keyword:
+            filters.append(f'sender contains "{sender_keyword}"')
+        if wanted_exts:
+            filters.append(f"extension in {wanted_exts}")
+        detail = f" matching {', '.join(filters)}" if filters else ""
+        return (
+            f"No attachments found{detail} in the {mailbox or 'inbox'} of "
+            f"'{account}' (scanned the {max_emails} most recent emails).\n"
+            "Try raising max_emails, relaxing the filters, or checking the account name "
+            "with list_accounts."
+        )
+
+    saved, skipped, failed = [], [], []
+    used_names = {entry.lower() for entry in os.listdir(resolved_dir)}
+
+    for candidate in candidates:
+        if len(saved) >= max_attachments:
+            skipped.append(f"{candidate['name']} (hit max_attachments={max_attachments})")
+            continue
+
+        # Resolve collisions here so a second "syllabus.pdf" does not clobber the first.
+        target_name = candidate["name"]
+        stem, dot, ext = target_name.rpartition(".")
+        counter = 1
+        while target_name.lower() in used_names:
+            target_name = (
+                f"{stem}-{counter}{dot}{ext}" if dot else f"{candidate['name']}-{counter}"
+            )
+            counter += 1
+        used_names.add(target_name.lower())
+        target_path = os.path.join(resolved_dir, target_name)
+
+        save_script = f'''
+        tell application "Mail"
+            try
+                set targetAccount to account "{escaped_account}"
+                {mailbox_setup}
+                set aMessage to item {candidate["index"]} of (every message of targetMailbox)
+                repeat with anAttachment in (mail attachments of aMessage)
+                    if (name of anAttachment) is "{escape_applescript(candidate["name"])}" then
+                        save anAttachment in POSIX file "{escape_applescript(target_path)}"
+                        return "OK"
+                    end if
+                end repeat
+                return "Error: attachment no longer present"
+            on error errMsg
+                return "Error: " & errMsg
+            end try
+        end tell
+        '''
+        result = run_applescript(save_script, timeout=120)
+        if result.strip() == "OK" and os.path.exists(target_path):
+            saved.append((target_name, candidate["subject"]))
+        else:
+            failed.append(f"{candidate['name']} — {result.strip() or 'unknown error'}")
+
+    lines = [
+        f"### Saved {len(saved)} of {len(candidates)} matching attachment(s)",
+        f"Directory: {resolved_dir}",
+        "",
+    ]
+    if saved:
+        lines.append("**Saved**")
+        lines.extend(f"- {name}  _(from: {subject[:70]})_" for name, subject in saved)
+        lines.append("")
+    if skipped:
+        lines.append("**Skipped**")
+        lines.extend(f"- {entry}" for entry in skipped)
+        lines.append("")
+    if failed:
+        lines.append("**Failed**")
+        lines.extend(f"- {entry}" for entry in failed)
+
+    return "\n".join(lines).rstrip()
+
+
 @mcp.tool()
 @inject_preferences
 def save_email_attachment(
@@ -257,36 +518,11 @@ def save_email_attachment(
         Confirmation message with save location
     """
 
-    # Expand tilde in save_path (POSIX file in AppleScript does not expand ~)
-    expanded_path = os.path.expanduser(save_path)
-
-    # Path validation: resolve to absolute path and enforce safety constraints
-    resolved_path = os.path.realpath(expanded_path)
-    home_dir = os.path.expanduser("~")
-
-    # Must be under the user's home directory
-    if not resolved_path.startswith(home_dir + os.sep) and resolved_path != home_dir:
-        return f"Error: Save path must be under your home directory ({home_dir}). Got: {resolved_path}"
-
-    # Block sensitive directories
-    sensitive_dirs = [
-        os.path.join(home_dir, ".ssh"),
-        os.path.join(home_dir, ".gnupg"),
-        os.path.join(home_dir, ".config"),
-        os.path.join(home_dir, ".aws"),
-        os.path.join(home_dir, ".claude"),
-        os.path.join(home_dir, "Library", "LaunchAgents"),
-        os.path.join(home_dir, "Library", "LaunchDaemons"),
-        os.path.join(home_dir, "Library", "Keychains"),
-    ]
-    for sensitive_dir in sensitive_dirs:
-        if (
-            resolved_path.startswith(sensitive_dir + os.sep)
-            or resolved_path == sensitive_dir
-        ):
-            return f"Error: Cannot save attachments to sensitive directory: {sensitive_dir}"
-
-    expanded_path = resolved_path
+    # Tilde expansion, home-directory containment, and the sensitive-directory
+    # blocklist all live in the shared guard so both savers enforce the same rules.
+    expanded_path, error = _validate_save_path(save_path)
+    if error:
+        return error
 
     # Escape for AppleScript
     escaped_account = escape_applescript(account)

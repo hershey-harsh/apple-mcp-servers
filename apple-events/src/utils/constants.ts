@@ -44,6 +44,12 @@ export const TOOLS = {
   CALENDAR_EVENTS: 'calendar_events',
   /** Calendar collections management tool */
   CALENDAR_CALENDARS: 'calendar_calendars',
+  /** Read-only planning: merged agenda, free slots, conflict checks */
+  CALENDAR_SCHEDULE: 'calendar_schedule',
+  /** Multi-event writes: bulk create/delete, occurrence cancellation, term schedules */
+  CALENDAR_BATCH: 'calendar_batch',
+  /** Multi-reminder writes: bulk create/update/complete/delete */
+  REMINDERS_BATCH: 'reminders_batch',
 } as const;
 
 /**

@@ -7,6 +7,7 @@
 
 import { z } from 'zod/v3';
 import { VALIDATION } from '../utils/constants.js';
+import { normalizeDateInput } from '../utils/naturalDate.js';
 
 // Security patterns – allow printable Unicode text while blocking dangerous control and delimiter chars.
 // Allows standard printable ASCII, extended Latin, CJK, plus newlines/tabs for notes.
@@ -231,13 +232,28 @@ export const SafeSearchSchema = createSafeTextSchema(
   true,
 );
 
-export const SafeDateSchema = z
-  .string()
-  .regex(
-    DATE_PATTERN,
-    "Date must be in format 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss', or ISO 8601 (e.g., '2025-10-30T04:00:00Z')",
-  )
-  .optional();
+/**
+ * Rewrites human phrasing ("tomorrow 3pm", "next monday", "in 2 hours") into the
+ * canonical form before the pattern check runs. Unrecognized text passes through
+ * untouched so the normal format error is still what the caller sees.
+ */
+const DATE_FORMAT_HINT =
+  "must be 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss', ISO 8601 (e.g. '2025-10-30T04:00:00Z'), or plain language such as 'tomorrow 3pm', 'next monday', 'in 2 hours', 'friday at 17:00', 'sep 8'";
+
+/**
+ * Rewrites human phrasing into the canonical form, then checks the result. The
+ * transform runs before the refine, so 'tomorrow 3pm' is accepted while genuine
+ * nonsense still fails with the usual format message.
+ */
+const createNaturalDateSchema = (fieldName: string) =>
+  z
+    .string()
+    .transform((value) => normalizeDateInput(value))
+    .refine((value) => DATE_PATTERN.test(value), {
+      message: `${fieldName} ${DATE_FORMAT_HINT}`,
+    });
+
+export const SafeDateSchema = createNaturalDateSchema('Date').optional();
 
 /**
  * Creates a required date schema with validation
@@ -245,11 +261,11 @@ export const SafeDateSchema = z
 const createRequiredDateSchema = (fieldName: string) =>
   z
     .string()
-    .regex(
-      DATE_PATTERN,
-      `${fieldName} must be in format 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss', or ISO 8601`,
-    )
-    .min(1, `${fieldName} is required`);
+    .min(1, `${fieldName} is required`)
+    .transform((value) => normalizeDateInput(value))
+    .refine((value) => DATE_PATTERN.test(value), {
+      message: `${fieldName} ${DATE_FORMAT_HINT}`,
+    });
 
 export const SafeUrlSchema = z
   .string()
@@ -309,6 +325,18 @@ const RecurrenceRuleObjectSchema = z.object({
     .refine((arr: number[] | undefined) => !arr || arr.length <= 12, {
       message: 'monthsOfYear cannot have more than 12 entries',
     }),
+  // Negative values count back from the end of the year (-1 = last week/day).
+  weeksOfYear: z
+    .array(z.number().int().min(-53).max(53).refine((n: number) => n !== 0))
+    .optional(),
+  daysOfYear: z
+    .array(z.number().int().min(-366).max(366).refine((n: number) => n !== 0))
+    .optional(),
+  // Narrows the matches to the Nth in each period: -1 = last, 1 = first.
+  // "Last Friday of the month" = monthly + daysOfWeek [6] + setPositions [-1].
+  setPositions: z
+    .array(z.number().int().min(-366).max(366).refine((n: number) => n !== 0))
+    .optional(),
 });
 
 const RecurrenceRuleSchema = RecurrenceRuleObjectSchema.optional();
@@ -530,12 +558,14 @@ export const UpdateCalendarEventSchema = z.object({
   recurrenceRules: RecurrenceRulesSchema,
   clearRecurrence: z.boolean().optional(),
   span: SpanSchema,
+  occurrenceDate: SafeDateSchema,
   targetCalendar: SafeListNameSchema,
 });
 
 export const DeleteCalendarEventSchema = z.object({
   id: SafeIdSchema,
   span: SpanSchema,
+  occurrenceDate: SafeDateSchema,
 });
 
 export const ReadCalendarsSchema = z.object({});
@@ -643,7 +673,13 @@ export class ValidationError extends Error {
  * }
  * }
  */
-export const validateInput = <T>(schema: z.ZodSchema<T>, input: unknown): T => {
+// Generic over the schema rather than over T: `ZodSchema<T>` pins input and output to
+// the same type, which silently degrades inference for schemas that use .default() or
+// .transform() (defaults came back as `boolean | undefined`, transforms as `unknown`).
+export const validateInput = <TSchema extends z.ZodTypeAny>(
+  schema: TSchema,
+  input: unknown,
+): z.output<TSchema> => {
   try {
     return schema.parse(input);
   } catch (error) {
@@ -764,6 +800,266 @@ export const WeeklyPlanningWorkflowArgsSchema = z.object({
     0,
     VALIDATION.MAX_NOTE_LENGTH,
     'User ideas',
+    true,
+  ),
+});
+
+/* ------------------------------------------------------------------------- *
+ * Planning + batch schemas
+ * ------------------------------------------------------------------------- */
+
+/** 24-hour clock time used for day windows and class meeting times. */
+const ClockTimeSchema = z.string().regex(/^([01]?\d|2[0-4])(:[0-5]\d)?$/, {
+  message: "Time must be 24-hour 'HH:mm' (e.g. '09:30', '17:00')",
+});
+
+/** EventKit weekday numbering: 1 = Sunday … 7 = Saturday. */
+const WeekdayListSchema = z
+  .array(z.number().int().min(1).max(7))
+  .min(1, 'Provide at least one weekday')
+  .max(7);
+
+const DateRangeSchema = z.object({
+  start: createRequiredDateSchema('Range start'),
+  end: createRequiredDateSchema('Range end'),
+  label: createSafeTextSchema(0, VALIDATION.MAX_TITLE_LENGTH, 'Label', true),
+});
+
+/** Shared knobs for anything that reasons about busy vs. free time. */
+const BusyTimeFields = {
+  filterCalendar: SafeListNameSchema,
+  filterAccount: SafeListNameSchema,
+  /** Count all-day events as busy. Off by default — an all-day "Reading Day"
+   *  should not make the whole day unbookable. */
+  includeAllDayAsBusy: z.boolean().optional().default(false),
+  /** Honour availability: events marked free/canceled do not block. */
+  respectAvailability: z.boolean().optional().default(true),
+};
+
+export const AgendaSchema = z.object({
+  startDate: SafeDateSchema,
+  endDate: SafeDateSchema,
+  filterCalendar: SafeListNameSchema,
+  filterAccount: SafeListNameSchema,
+  search: SafeSearchSchema,
+  includeReminders: z.boolean().optional().default(true),
+  includeCompletedReminders: z.boolean().optional().default(false),
+  /** Also report the open gaps left in each day. */
+  includeFreeGaps: z.boolean().optional().default(false),
+  dayStart: ClockTimeSchema.optional(),
+  dayEnd: ClockTimeSchema.optional(),
+});
+
+export const FreeSlotsSchema = z.object({
+  startDate: SafeDateSchema,
+  endDate: SafeDateSchema,
+  dayStart: ClockTimeSchema.optional(),
+  dayEnd: ClockTimeSchema.optional(),
+  /** Discard gaps shorter than this. */
+  durationMinutes: z.number().int().min(5).max(1440).optional().default(30),
+  /** Keep this much space clear either side of existing commitments. */
+  bufferMinutes: z.number().int().min(0).max(240).optional().default(0),
+  daysOfWeek: WeekdayListSchema.optional(),
+  maxResults: z.number().int().min(1).max(200).optional().default(50),
+  ...BusyTimeFields,
+});
+
+export const ConflictCheckSchema = z.object({
+  slots: z
+    .array(
+      z.object({
+        startDate: createRequiredDateSchema('Slot start'),
+        endDate: createRequiredDateSchema('Slot end'),
+        label: createSafeTextSchema(0, VALIDATION.MAX_TITLE_LENGTH, 'Label', true),
+      }),
+    )
+    .min(1, 'Provide at least one slot to check')
+    .max(100, 'Cannot check more than 100 slots at once'),
+  ...BusyTimeFields,
+});
+
+/**
+ * Item schemas are exported so handlers can validate each row on its own. The batch
+ * wrappers deliberately accept `unknown[]`: validating the array as a whole made a
+ * single malformed row reject every other row, which defeats continueOnError.
+ */
+export const BatchEventItemSchema = CreateCalendarEventSchema;
+export const BatchReminderItemSchema = CreateReminderSchema;
+export const BatchReminderUpdateItemSchema = UpdateReminderSchema;
+export const BatchDateRangeSchema = DateRangeSchema;
+export const BatchDateSchema = createRequiredDateSchema('Date');
+
+export const BatchCreateEventsSchema = z.object({
+  events: z
+    .array(z.unknown())
+    .min(1, 'Provide at least one event')
+    .max(200, 'Cannot create more than 200 events in one call'),
+  /** Applied to any event that does not name its own calendar. */
+  targetCalendar: SafeListNameSchema,
+  /** Keep going after a failure and report per-item results (default true). */
+  continueOnError: z.boolean().optional().default(true),
+  /** Refuse to create an event that overlaps an existing busy one. */
+  skipConflicts: z.boolean().optional().default(false),
+});
+
+export const BatchDeleteEventsSchema = z.object({
+  ids: z
+    .array(SafeIdSchema)
+    .min(1, 'Provide at least one event ID')
+    .max(200, 'Cannot delete more than 200 events in one call'),
+  span: SpanSchema,
+  continueOnError: z.boolean().optional().default(true),
+});
+
+export const CancelOccurrencesSchema = z.object({
+  id: SafeIdSchema,
+  occurrenceDates: z
+    .array(z.string())
+    .min(1, 'Provide at least one occurrence date')
+    .max(100, 'Cannot cancel more than 100 occurrences in one call'),
+  continueOnError: z.boolean().optional().default(true),
+});
+
+export const ClassScheduleItemSchema = z.object({
+  title: SafeTextSchema,
+  daysOfWeek: WeekdayListSchema,
+  startTime: ClockTimeSchema,
+  endTime: ClockTimeSchema,
+  location: createSafeTextSchema(
+    0,
+    VALIDATION.MAX_LOCATION_LENGTH,
+    'Location',
+    true,
+  ),
+  structuredLocation: StructuredLocationSchema,
+  note: SafeNoteSchema,
+  url: SafeUrlSchema,
+  alarms: AlarmArraySchema,
+  availability: AvailabilitySchema,
+  /** Meets every N weeks (default 1). */
+  interval: z.number().int().min(1).max(8).optional().default(1),
+});
+
+export const CreateClassScheduleSchema = z.object({
+  termStart: createRequiredDateSchema('Term start'),
+  termEnd: createRequiredDateSchema('Term end'),
+  targetCalendar: SafeListNameSchema,
+  /** Breaks and holidays; matching meetings are removed from each series. */
+  skipRanges: z.array(z.unknown()).max(40).optional(),
+  classes: z
+    .array(z.unknown())
+    .min(1, 'Provide at least one class')
+    .max(30, 'Cannot create more than 30 class series in one call'),
+  continueOnError: z.boolean().optional().default(true),
+});
+
+export const ScheduleStudyBlocksSchema = z.object({
+  title: SafeTextSchema,
+  /** Total study time to place across the window. */
+  totalMinutes: z.number().int().min(15).max(6000),
+  /** Length of each block (default 90). */
+  blockMinutes: z.number().int().min(15).max(480).optional().default(90),
+  startDate: SafeDateSchema,
+  endDate: SafeDateSchema,
+  dayStart: ClockTimeSchema.optional(),
+  dayEnd: ClockTimeSchema.optional(),
+  daysOfWeek: WeekdayListSchema.optional(),
+  bufferMinutes: z.number().int().min(0).max(240).optional().default(10),
+  maxBlocksPerDay: z.number().int().min(1).max(8).optional().default(2),
+  targetCalendar: SafeListNameSchema,
+  note: SafeNoteSchema,
+  location: createSafeTextSchema(
+    0,
+    VALIDATION.MAX_LOCATION_LENGTH,
+    'Location',
+    true,
+  ),
+  alarms: AlarmArraySchema,
+  availability: AvailabilitySchema,
+  /** Plan without writing anything. */
+  dryRun: z.boolean().optional().default(false),
+  ...BusyTimeFields,
+});
+
+export const BatchCreateRemindersSchema = z.object({
+  reminders: z
+    .array(z.unknown())
+    .min(1, 'Provide at least one reminder')
+    .max(200, 'Cannot create more than 200 reminders in one call'),
+  /** Applied to any reminder that does not name its own list. */
+  targetList: SafeListNameSchema,
+  continueOnError: z.boolean().optional().default(true),
+});
+
+export const BatchUpdateRemindersSchema = z.object({
+  updates: z
+    .array(z.unknown())
+    .min(1, 'Provide at least one update')
+    .max(200, 'Cannot update more than 200 reminders in one call'),
+  continueOnError: z.boolean().optional().default(true),
+});
+
+export const BatchCompleteRemindersSchema = z
+  .object({
+    ids: z.array(SafeIdSchema).max(200).optional(),
+    /** Resolved case-insensitively against open reminders — use when you have
+     *  the wording but not the ID. */
+    titles: z.array(SafeTextSchema).max(200).optional(),
+    filterList: SafeListNameSchema,
+    /** false re-opens the reminders instead. */
+    completed: z.boolean().optional().default(true),
+    continueOnError: z.boolean().optional().default(true),
+  })
+  .refine((value) => (value.ids?.length ?? 0) + (value.titles?.length ?? 0) > 0, {
+    message: 'Provide ids, titles, or both',
+  });
+
+export const BatchDeleteRemindersSchema = z
+  .object({
+    ids: z.array(SafeIdSchema).max(200).optional(),
+    titles: z.array(SafeTextSchema).max(200).optional(),
+    filterList: SafeListNameSchema,
+    continueOnError: z.boolean().optional().default(true),
+  })
+  .refine((value) => (value.ids?.length ?? 0) + (value.titles?.length ?? 0) > 0, {
+    message: 'Provide ids, titles, or both',
+  });
+
+/**
+ * Schemas for the college-workflow prompt arguments
+ */
+export const SemesterSetupArgsSchema = z.object({
+  'Course details': createSafeTextSchema(
+    0,
+    VALIDATION.MAX_NOTE_LENGTH,
+    'Course details',
+    true,
+  ),
+});
+
+export const ExamPrepPlanArgsSchema = z.object({
+  'Exam details': createSafeTextSchema(
+    0,
+    VALIDATION.MAX_NOTE_LENGTH,
+    'Exam details',
+    true,
+  ),
+});
+
+export const AssignmentTriageArgsSchema = z.object({
+  'Triage scope': createSafeTextSchema(
+    0,
+    VALIDATION.MAX_NOTE_LENGTH,
+    'Triage scope',
+    true,
+  ),
+});
+
+export const CampusDayCheckArgsSchema = z.object({
+  'Day to check': createSafeTextSchema(
+    0,
+    VALIDATION.MAX_TITLE_LENGTH,
+    'Day to check',
     true,
   ),
 });

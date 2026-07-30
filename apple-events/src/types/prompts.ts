@@ -7,7 +7,11 @@ export type PromptName =
   | 'daily-task-organizer'
   | 'smart-reminder-creator'
   | 'reminder-review-assistant'
-  | 'weekly-planning-workflow';
+  | 'weekly-planning-workflow'
+  | 'semester-setup'
+  | 'exam-prep-plan'
+  | 'assignment-triage'
+  | 'campus-day-check';
 
 /**
  * Describes an individual prompt argument exposed to MCP clients.
@@ -82,6 +86,34 @@ export interface WeeklyPlanningWorkflowArgs {
 }
 
 /**
+ * Arguments accepted by the `semester-setup` prompt.
+ */
+export interface SemesterSetupArgs {
+  'Course details'?: string;
+}
+
+/**
+ * Arguments accepted by the `exam-prep-plan` prompt.
+ */
+export interface ExamPrepPlanArgs {
+  'Exam details'?: string;
+}
+
+/**
+ * Arguments accepted by the `assignment-triage` prompt.
+ */
+export interface AssignmentTriageArgs {
+  'Triage scope'?: string;
+}
+
+/**
+ * Arguments accepted by the `campus-day-check` prompt.
+ */
+export interface CampusDayCheckArgs {
+  'Day to check'?: string;
+}
+
+/**
  * Mapped helper type that links prompt names with their argument signatures.
  */
 export interface PromptArgsByName {
@@ -89,6 +121,10 @@ export interface PromptArgsByName {
   'smart-reminder-creator': SmartReminderCreatorArgs;
   'reminder-review-assistant': ReminderReviewAssistantArgs;
   'weekly-planning-workflow': WeeklyPlanningWorkflowArgs;
+  'semester-setup': SemesterSetupArgs;
+  'exam-prep-plan': ExamPrepPlanArgs;
+  'assignment-triage': AssignmentTriageArgs;
+  'campus-day-check': CampusDayCheckArgs;
 }
 
 /**

@@ -264,40 +264,122 @@ def tool_check_addressbook(ctx: Context) -> str:
 
 
 @mcp.tool()
-def tool_get_chats(ctx: Context) -> str:
+def tool_get_chats(
+    ctx: Context,
+    include_unnamed: Annotated[
+        bool,
+        Field(
+            description=(
+                "Include group chats that have no display name, labelling them by their "
+                "participants. Default is True — most group chats are never named, and "
+                "excluding them makes them unreachable."
+            )
+        ),
+    ] = True,
+    search: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional filter matched case-insensitively against the chat name and "
+                "its participant handles, e.g. a course code or a classmate's number."
+            )
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(description="Maximum chats to return. Default is 100."),
+    ] = 100,
+) -> str:
     """
-    List named group chats from the macOS Messages database.
+    List group chats from the macOS Messages database, named or not.
 
-    This is read-only: it queries chat identifiers and display names and does not
-    send, edit, or delete messages. Requires Full Disk Access for the host app or
-    terminal. Returns a plain-text numbered list of group names and IDs. Use this
-    before tool_send_message with group_chat=true; use tool_get_recent_messages
+    This is read-only: it queries chat identifiers, display names, and participant
+    handles, and does not send, edit, or delete messages. Requires Full Disk Access
+    for the host app or terminal.
+
+    Unnamed group chats are included by default and labelled by their participants
+    (e.g. "+15551234567, +15559876543"), because study-group and project threads are
+    usually never given a name — filtering them out left them impossible to find or
+    message. Returns a numbered list with each chat's ID and participant count. Use
+    this before tool_send_message with group_chat=true; use tool_get_recent_messages
     when you need message contents instead of chat IDs.
     """
     logger.info("Getting available chats")
     try:
-        query = "SELECT chat_identifier, display_name FROM chat WHERE display_name IS NOT NULL"
+        try:
+            limit = max(1, min(500, int(limit)))
+        except (TypeError, ValueError):
+            return "Error: limit must be a whole number."
+
+        # Pull participants alongside each chat so unnamed ones can still be
+        # identified. LEFT JOINs keep chats that somehow have no join rows.
+        query = """
+            SELECT c.chat_identifier AS chat_identifier,
+                   c.display_name AS display_name,
+                   GROUP_CONCAT(h.id, ', ') AS participants,
+                   COUNT(h.id) AS participant_count
+            FROM chat c
+            LEFT JOIN chat_handle_join chj ON chj.chat_id = c.ROWID
+            LEFT JOIN handle h ON h.ROWID = chj.handle_id
+            GROUP BY c.ROWID
+            ORDER BY c.ROWID DESC
+        """
         results = query_messages_db(query)
 
         if not results:
-            return "No group chats found."
+            return "No chats found."
 
         if "error" in results[0]:
             return f"Error accessing chats: {results[0]['error']}"
 
-        # Filter out chats without display names and format the results
-        chats = [r for r in results if r.get("display_name")]
-
-        if not chats:
-            return "No named group chats found."
-
-        formatted_chats = []
-        for i, chat in enumerate(chats, 1):
-            formatted_chats.append(
-                f"{i}. {chat['display_name']} (ID: {chat['chat_identifier']})"
+        needle = search.strip().lower() if search else None
+        chats = []
+        for row in results:
+            display_name = (row.get("display_name") or "").strip()
+            if not display_name and not include_unnamed:
+                continue
+            participants = (row.get("participants") or "").strip()
+            label = display_name or (participants or "(unknown participants)")
+            if needle and needle not in f"{label} {participants}".lower():
+                continue
+            chats.append(
+                {
+                    "label": label,
+                    "named": bool(display_name),
+                    "identifier": row.get("chat_identifier") or "",
+                    "participants": participants,
+                    "count": row.get("participant_count") or 0,
+                }
             )
 
-        return "Available group chats:\n" + "\n".join(formatted_chats)
+        if not chats:
+            hint = (
+                f" matching '{search}'"
+                if search
+                else " with a display name" if not include_unnamed else ""
+            )
+            return (
+                f"No group chats found{hint}.\n"
+                "Try clearing `search`, or set include_unnamed=true to see chats that "
+                "were never given a name."
+            )
+
+        truncated = len(chats) > limit
+        formatted_chats = []
+        for i, chat in enumerate(chats[:limit], 1):
+            marker = "" if chat["named"] else " [unnamed]"
+            people = f", {chat['count']} participant(s)" if chat["count"] else ""
+            formatted_chats.append(
+                f"{i}. {chat['label']}{marker} (ID: {chat['identifier']}{people})"
+            )
+
+        output = "Available chats:\n" + "\n".join(formatted_chats)
+        if truncated:
+            output += (
+                f"\n\nShowing {limit} of {len(chats)} chats. "
+                "Raise `limit` or narrow with `search`."
+            )
+        return output
     except Exception as e:
         logger.error(f"Error getting chats: {str(e)}")
         return f"Error getting chats: {str(e)}"

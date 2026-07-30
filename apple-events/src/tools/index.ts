@@ -5,17 +5,30 @@
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type {
+  CalendarBatchToolArgs,
   CalendarsToolArgs,
   CalendarToolArgs,
   ListsToolArgs,
   RemindersToolArgs,
+  ReminderBatchToolArgs,
+  ScheduleToolArgs,
   SubtasksToolArgs,
 } from '../types/index.js';
 import { MESSAGES, TOOLS as TOOL_NAMES } from '../utils/constants.js';
 import { TOOLS } from './definitions.js';
 import {
+  handleAgenda,
+  handleBatchCompleteReminders,
+  handleBatchCreateEvents,
+  handleBatchCreateReminders,
+  handleBatchDeleteEvents,
+  handleBatchDeleteReminders,
+  handleBatchUpdateReminders,
+  handleCancelOccurrences,
+  handleConflicts,
   handleCreateCalendar,
   handleCreateCalendarEvent,
+  handleCreateClassSchedule,
   handleCreateReminder,
   handleCreateReminderList,
   handleCreateSubtask,
@@ -30,6 +43,8 @@ import {
   handleReadReminders,
   handleReadSubtasks,
   handleReorderSubtasks,
+  handleFreeSlots,
+  handleScheduleStudyBlocks,
   handleToggleSubtask,
   handleUpdateCalendar,
   handleUpdateCalendarEvent,
@@ -43,7 +58,10 @@ type ToolArgs =
   | ListsToolArgs
   | SubtasksToolArgs
   | CalendarToolArgs
-  | CalendarsToolArgs;
+  | CalendarsToolArgs
+  | ScheduleToolArgs
+  | CalendarBatchToolArgs
+  | ReminderBatchToolArgs;
 
 type ToolRouter = (args?: ToolArgs) => Promise<CallToolResult>;
 
@@ -56,7 +74,10 @@ type RoutedToolName =
   | 'reminders_lists'
   | 'reminders_subtasks'
   | 'calendar_events'
-  | 'calendar_calendars';
+  | 'calendar_calendars'
+  | 'calendar_schedule'
+  | 'calendar_batch'
+  | 'reminders_batch';
 type ToolName = RoutedToolName;
 
 /**
@@ -142,6 +163,37 @@ const TOOL_ROUTER_MAP = {
       delete: (calendarsArgs) => handleDeleteCalendar(calendarsArgs),
     },
     'read',
+  ),
+  [TOOL_NAMES.CALENDAR_SCHEDULE]: createActionRouter<ScheduleToolArgs>(
+    TOOL_NAMES.CALENDAR_SCHEDULE,
+    {
+      agenda: (scheduleArgs) => handleAgenda(scheduleArgs),
+      'free-slots': (scheduleArgs) => handleFreeSlots(scheduleArgs),
+      conflicts: (scheduleArgs) => handleConflicts(scheduleArgs),
+    },
+    // Asking for "my schedule" with no action should show the agenda.
+    'agenda',
+  ),
+  [TOOL_NAMES.CALENDAR_BATCH]: createActionRouter<CalendarBatchToolArgs>(
+    TOOL_NAMES.CALENDAR_BATCH,
+    {
+      'create-events': (batchArgs) => handleBatchCreateEvents(batchArgs),
+      'delete-events': (batchArgs) => handleBatchDeleteEvents(batchArgs),
+      'cancel-occurrences': (batchArgs) => handleCancelOccurrences(batchArgs),
+      'create-class-schedule': (batchArgs) =>
+        handleCreateClassSchedule(batchArgs),
+      'schedule-study-blocks': (batchArgs) =>
+        handleScheduleStudyBlocks(batchArgs),
+    },
+  ),
+  [TOOL_NAMES.REMINDERS_BATCH]: createActionRouter<ReminderBatchToolArgs>(
+    TOOL_NAMES.REMINDERS_BATCH,
+    {
+      create: (batchArgs) => handleBatchCreateReminders(batchArgs),
+      update: (batchArgs) => handleBatchUpdateReminders(batchArgs),
+      complete: (batchArgs) => handleBatchCompleteReminders(batchArgs),
+      delete: (batchArgs) => handleBatchDeleteReminders(batchArgs),
+    },
   ),
 } satisfies Record<ToolName, ToolRouter>;
 

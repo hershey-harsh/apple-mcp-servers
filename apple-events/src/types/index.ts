@@ -35,6 +35,14 @@ export interface RecurrenceRule {
   daysOfWeek?: number[]; // 1 = Sunday, 7 = Saturday
   daysOfMonth?: number[]; // 1-31
   monthsOfYear?: number[]; // 1-12
+  weeksOfYear?: number[]; // 1-53, negative counts back from year end
+  daysOfYear?: number[]; // 1-366, negative counts back from year end
+  /**
+   * Narrows the days the rule already matches to the Nth of each period
+   * (1 = first, -1 = last). "Last Friday of the month" is
+   * frequency 'monthly' + daysOfWeek [6] + setPositions [-1].
+   */
+  setPositions?: number[];
 }
 
 /**
@@ -351,6 +359,12 @@ export interface CalendarToolArgs extends BaseToolArgs {
   recurrenceRules?: RecurrenceRule[];
   clearRecurrence?: boolean;
   span?: 'this-event' | 'future-events';
+  /**
+   * Targets one occurrence of a recurring series instead of the first one.
+   * Combine with span 'this-event' to change or cancel a single meeting
+   * (e.g. one cancelled class) while leaving the rest of the series intact.
+   */
+  occurrenceDate?: string;
   // Target calendar for create/update operations
   targetCalendar?: string;
 }
@@ -363,10 +377,79 @@ export interface CalendarsToolArgs extends BaseToolArgs {
 }
 
 /**
+ * Read-only planning actions over the existing calendar/reminder data.
+ */
+export type ScheduleAction = 'agenda' | 'free-slots' | 'conflicts';
+
+export const SCHEDULE_ACTIONS: readonly ScheduleAction[] = [
+  'agenda',
+  'free-slots',
+  'conflicts',
+] as const;
+
+/**
+ * Write actions that operate on many items at once. Kept separate from the
+ * single-item tools so partial-failure reporting has somewhere to live.
+ */
+export type CalendarBatchAction =
+  | 'create-events'
+  | 'delete-events'
+  | 'cancel-occurrences'
+  | 'create-class-schedule'
+  | 'schedule-study-blocks';
+
+export const CALENDAR_BATCH_ACTIONS: readonly CalendarBatchAction[] = [
+  'create-events',
+  'delete-events',
+  'cancel-occurrences',
+  'create-class-schedule',
+  'schedule-study-blocks',
+] as const;
+
+export type ReminderBatchAction = 'create' | 'update' | 'complete' | 'delete';
+
+export const REMINDER_BATCH_ACTIONS: readonly ReminderBatchAction[] = [
+  'create',
+  'update',
+  'complete',
+  'delete',
+] as const;
+
+/**
+ * Loosely typed argument bags for the planning and batch tools. Their shapes vary
+ * a lot per action, so the Zod schemas — not these interfaces — are the contract.
+ */
+export interface ScheduleToolArgs extends BaseToolArgs {
+  action: ScheduleAction;
+  [key: string]: unknown;
+}
+
+export interface CalendarBatchToolArgs extends BaseToolArgs {
+  action: CalendarBatchAction;
+  [key: string]: unknown;
+}
+
+export interface ReminderBatchToolArgs extends BaseToolArgs {
+  action: ReminderBatchAction;
+  [key: string]: unknown;
+}
+
+/** Per-item outcome for any batch operation. */
+export interface BatchItemResult {
+  index: number;
+  label: string;
+  ok: boolean;
+  id?: string;
+  message?: string;
+}
+
+/**
  * Prompt-related type exports for consumers that need to interact with the
  * structured MCP prompt registry.
  */
 export type {
+  AssignmentTriageArgs,
+  CampusDayCheckArgs,
   DailyTaskOrganizerArgs,
   PromptArgsByName,
   PromptArgumentDefinition,
@@ -376,7 +459,9 @@ export type {
   PromptName,
   PromptResponse,
   PromptTemplate,
+  ExamPrepPlanArgs,
   ReminderReviewAssistantArgs,
+  SemesterSetupArgs,
   SmartReminderCreatorArgs,
   WeeklyPlanningWorkflowArgs,
 } from './prompts.js';

@@ -8,7 +8,20 @@ from mcp.types import Annotations, ToolAnnotations
 
 from apple_maps_mcp.config import load_settings
 from apple_maps_mcp.maps_bridge import AppleMapsBridge, MapsBridgeError, build_bridge
-from apple_maps_mcp.models import DirectionsResponse, ErrorResponse, HealthResponse, MapsLinkResponse, OpenMapsResponse, PlaceRecord, PlaceSearchResponse, ToolError
+from apple_maps_mcp.models import (
+    CampusHopResponse,
+    DirectionsResponse,
+    ErrorResponse,
+    HealthResponse,
+    HopFeasibility,
+    MapsLinkResponse,
+    OpenMapsResponse,
+    PlaceRecord,
+    PlaceSearchResponse,
+    ToolError,
+    TravelMatrixResponse,
+    TravelOption,
+)
 
 SERVER_INSTRUCTIONS = (
     "Use this server for Apple Maps and travel context on macOS. "
@@ -139,6 +152,235 @@ def maps_get_directions(origin: str, destination: str, transport: str = "driving
         )
     except MapsBridgeError as exc:
         return _error_response(exc.error_code, exc.message, exc.suggestion)
+
+
+def _route_leg(origin: str, destination: str, transport: str) -> TravelOption:
+    """Prices a single origin→destination leg, returning a failed option rather than
+    raising so one bad address cannot sink a whole comparison."""
+    try:
+        payload = _bridge().directions(origin=origin, destination=destination, transport=transport)
+        seconds = float(payload["expected_travel_time_seconds"])
+        return TravelOption(
+            destination_query=destination,
+            transport=str(payload["transport"]),
+            ok=True,
+            destination=PlaceRecord(**payload["destination"]),
+            distance_meters=float(payload["distance_meters"]),
+            expected_travel_time_seconds=seconds,
+            expected_travel_time_minutes=round(seconds / 60, 1),
+            advisory_notices=[str(item) for item in payload.get("advisory_notices", [])],
+            maps_url=str(payload["maps_url"]),
+        )
+    except MapsBridgeError as exc:
+        return TravelOption(
+            destination_query=destination,
+            transport=transport,
+            ok=False,
+            error=ToolError(
+                error_code=exc.error_code, message=exc.message, suggestion=exc.suggestion
+            ),
+        )
+
+
+@mcp.tool(
+    title="Compare Travel Times",
+    description=(
+        "Compare travel time from one origin to several destinations and/or by several "
+        "transport modes in a single call, and get back the fastest option plus a ready-made "
+        "calendar alarm offset. Use it to answer 'which of these is closest?', 'should I walk "
+        "or drive?', and 'when do I need to leave?'. A leg that cannot be routed is reported "
+        "as a failed option instead of failing the whole call. The leave_by_offset_seconds "
+        "value is negative and already includes buffer_minutes, so it can be passed straight "
+        "to a calendar/reminder alarm relativeOffset to get a 'time to leave' alert."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+    structured_output=True,
+)
+def maps_compare_travel_times(
+    origin: str,
+    destinations: list[str],
+    transports: list[str] | None = None,
+    buffer_minutes: int = 0,
+) -> TravelMatrixResponse | ErrorResponse:
+    if not destinations:
+        return _error_response(
+            "NO_DESTINATIONS",
+            "Provide at least one destination.",
+            "Pass destinations as a list of place names or addresses.",
+        )
+    if len(destinations) > 10:
+        return _error_response(
+            "TOO_MANY_DESTINATIONS",
+            "At most 10 destinations can be compared in one call.",
+            "Split the list across multiple calls.",
+        )
+    modes = transports or ["driving"]
+    if len(modes) > 4:
+        return _error_response(
+            "TOO_MANY_TRANSPORTS",
+            "At most 4 transport modes can be compared in one call.",
+            "Typical modes are driving, walking, and transit.",
+        )
+    if buffer_minutes < 0 or buffer_minutes > 240:
+        return _error_response(
+            "INVALID_BUFFER",
+            "buffer_minutes must be between 0 and 240.",
+            "Use a small buffer such as 10 to allow for getting out the door.",
+        )
+
+    options = [
+        _route_leg(origin, destination, transport)
+        for destination in destinations
+        for transport in modes
+    ]
+    succeeded = [option for option in options if option.ok]
+    fastest = min(
+        succeeded,
+        key=lambda option: option.expected_travel_time_seconds or float("inf"),
+        default=None,
+    )
+    leave_by = None
+    if fastest and fastest.expected_travel_time_seconds is not None:
+        leave_by = -int(fastest.expected_travel_time_seconds + buffer_minutes * 60)
+
+    return TravelMatrixResponse(
+        origin_query=origin,
+        options=options,
+        count=len(options),
+        succeeded=len(succeeded),
+        failed=len(options) - len(succeeded),
+        fastest=fastest,
+        leave_by_offset_seconds=leave_by,
+    )
+
+
+@mcp.tool(
+    title="Check Back-To-Back Hops",
+    description=(
+        "Check whether a sequence of back-to-back commitments is physically makeable: for "
+        "each hop it compares the gap between one ending and the next starting against the "
+        "actual travel time, and reports the slack left over. Built for back-to-back classes "
+        "in different buildings, but works for any tight schedule. Pass each hop with the "
+        "locations and the minutes available between them (end of one, start of the next). "
+        "Anything with negative slack is flagged as not feasible, so you can move the event, "
+        "switch transport mode, or set an earlier leave-by alarm."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+    structured_output=True,
+)
+def maps_check_campus_hops(
+    hops: list[dict], default_transport: str = "walking", buffer_minutes: int = 5
+) -> CampusHopResponse | ErrorResponse:
+    if not hops:
+        return _error_response(
+            "NO_HOPS",
+            "Provide at least one hop.",
+            'Each hop needs from_location, to_location, and available_minutes.',
+        )
+    if len(hops) > 12:
+        return _error_response(
+            "TOO_MANY_HOPS",
+            "At most 12 hops can be checked in one call.",
+            "Split a full week across multiple calls.",
+        )
+    if buffer_minutes < 0 or buffer_minutes > 120:
+        return _error_response(
+            "INVALID_BUFFER",
+            "buffer_minutes must be between 0 and 120.",
+            "5 minutes is a reasonable default for packing up and walking out.",
+        )
+
+    results: list[HopFeasibility] = []
+    for index, hop in enumerate(hops):
+        origin = str(hop.get("from_location") or "").strip()
+        destination = str(hop.get("to_location") or "").strip()
+        transport = str(hop.get("transport") or default_transport)
+        raw_available = hop.get("available_minutes")
+
+        if not origin or not destination:
+            results.append(
+                HopFeasibility(
+                    from_location=origin or f"hop {index + 1}",
+                    to_location=destination or f"hop {index + 1}",
+                    transport=transport,
+                    ok=False,
+                    verdict="skipped: from_location and to_location are both required",
+                    error=ToolError(
+                        error_code="MISSING_LOCATION",
+                        message="from_location and to_location are required.",
+                        suggestion="Provide both building names or addresses.",
+                    ),
+                )
+            )
+            continue
+
+        try:
+            available = float(raw_available)
+        except (TypeError, ValueError):
+            results.append(
+                HopFeasibility(
+                    from_location=origin,
+                    to_location=destination,
+                    transport=transport,
+                    ok=False,
+                    verdict="skipped: available_minutes must be a number",
+                    error=ToolError(
+                        error_code="INVALID_AVAILABLE_MINUTES",
+                        message="available_minutes must be a number.",
+                        suggestion="Use the gap in minutes between one ending and the next starting.",
+                    ),
+                )
+            )
+            continue
+
+        leg = _route_leg(origin, destination, transport)
+        if not leg.ok or leg.expected_travel_time_seconds is None:
+            results.append(
+                HopFeasibility(
+                    from_location=origin,
+                    to_location=destination,
+                    transport=transport,
+                    ok=False,
+                    available_minutes=available,
+                    verdict="could not route this hop",
+                    error=leg.error,
+                )
+            )
+            continue
+
+        travel = round(leg.expected_travel_time_seconds / 60, 1)
+        slack = round(available - travel - buffer_minutes, 1)
+        feasible = slack >= 0
+        if feasible:
+            verdict = f"OK — {slack} min to spare (after a {buffer_minutes} min buffer)"
+        else:
+            verdict = (
+                f"TIGHT — short by {abs(slack)} min; travel is {travel} min but only "
+                f"{available} min available. Try a faster mode, a nearer room, or shifting a time."
+            )
+
+        results.append(
+            HopFeasibility(
+                from_location=origin,
+                to_location=destination,
+                transport=transport,
+                ok=True,
+                available_minutes=available,
+                travel_minutes=travel,
+                slack_minutes=slack,
+                feasible=feasible,
+                verdict=verdict,
+                maps_url=leg.maps_url,
+            )
+        )
+
+    scored = [hop for hop in results if hop.slack_minutes is not None]
+    return CampusHopResponse(
+        hops=results,
+        count=len(results),
+        infeasible_count=sum(1 for hop in results if hop.feasible is False),
+        tightest=min(scored, key=lambda hop: hop.slack_minutes, default=None),
+    )
 
 
 @mcp.tool(

@@ -27,6 +27,7 @@ import { toolConfig } from './config/tools.js';
 import { logger } from './utils/logger.js';
 import { formatErrorForUser } from './errors/ApiError.js';
 import { handleGetForecast } from './handlers/forecastHandler.js';
+import { handleFindWeatherWindow } from './handlers/weatherWindowHandler.js';
 import { handleGetCurrentConditions } from './handlers/currentConditionsHandler.js';
 import { handleGetAlerts } from './handlers/alertsHandler.js';
 import { handleGetHistoricalWeather } from './handlers/historicalWeatherHandler.js';
@@ -286,6 +287,78 @@ const TOOL_DEFINITIONS = {
           default: 'auto'
         },
         ...DETAIL_SCHEMA_PROPERTY,
+        ...UNIT_SCHEMA_PROPERTIES
+      },
+      required: []
+    }
+  },
+
+  find_weather_window: {
+    name: 'find_weather_window' as const,
+    description: 'Find stretches of upcoming time whose weather satisfies constraints — answers "WHEN should I do this?" rather than "what will the weather be?". Scans the hourly forecast and returns contiguous windows of at least duration_hours that stay under a precipitation-chance ceiling and inside optional temperature/wind limits and a daily time range. Use it for anything outdoors or weather-sensitive: walking or biking to campus, an outdoor study session, a run, moving boxes, laundry on a line, photography. Each window reports a copy-paste "Start time for scheduling" value, so the usual pattern is: find open time on the calendar first, then call this to pick which of those slots is actually pleasant, then create the event. When nothing matches, the response names which constraint eliminated the most hours so you know what to relax. Uses Open-Meteo (global coverage, uniform hourly series). Provide the location as coordinates, a saved location_name, or a free-text city_name.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        ...LOCATION_SCHEMA_PROPERTIES,
+        days: {
+          type: 'number' as const,
+          description: 'How many days ahead to search (1-16, default: 3). The forecast is only meaningful ~16 days out.',
+          minimum: 1,
+          maximum: 16,
+          default: 3
+        },
+        duration_hours: {
+          type: 'number' as const,
+          description: 'Minimum length of an acceptable window, in hours (1-24, default: 2).',
+          minimum: 1,
+          maximum: 24,
+          default: 2
+        },
+        max_precipitation_probability: {
+          type: 'number' as const,
+          description: 'Reject any hour whose precipitation chance exceeds this percentage (0-100, default: 25). Use 10 for "must stay dry", 50 for "a bit of risk is fine".',
+          minimum: 0,
+          maximum: 100,
+          default: 25
+        },
+        min_temperature: {
+          type: 'number' as const,
+          description: 'Reject hours colder than this, in the same unit as the output (F by default, C when units="metric").'
+        },
+        max_temperature: {
+          type: 'number' as const,
+          description: 'Reject hours warmer than this, in the same unit as the output.'
+        },
+        max_wind_speed: {
+          type: 'number' as const,
+          description: 'Reject hours windier than this, in the output wind unit (mph by default, km/h when units="metric"). Useful for cycling.'
+        },
+        earliest_hour: {
+          type: 'number' as const,
+          description: 'Earliest acceptable hour of the local day, 0-23 (default: 7).',
+          minimum: 0,
+          maximum: 23,
+          default: 7
+        },
+        latest_hour: {
+          type: 'number' as const,
+          description: 'Latest acceptable hour of the local day, 1-24 (default: 21). Must be greater than earliest_hour.',
+          minimum: 1,
+          maximum: 24,
+          default: 21
+        },
+        daylight_only: {
+          type: 'boolean' as const,
+          description: 'Only accept daylight hours, using the forecast\'s own day/night flag (default: false).',
+          default: false
+        },
+        max_results: {
+          type: 'number' as const,
+          description: 'Maximum number of windows to return (1-50, default: 10).',
+          minimum: 1,
+          maximum: 50,
+          default: 10
+        },
         ...UNIT_SCHEMA_PROPERTIES
       },
       required: []
@@ -696,6 +769,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_forecast':
         return await withAnalytics('get_forecast', async () =>
           handleGetForecast(args, noaaService, openMeteoService, locationStore, geocodingService, nceiService)
+        );
+
+      case 'find_weather_window':
+        return await withAnalytics('find_weather_window', async () =>
+          handleFindWeatherWindow(args, openMeteoService, locationStore, geocodingService)
         );
 
       case 'get_current_conditions':

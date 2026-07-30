@@ -27,6 +27,27 @@ describe('Tools Definitions', () => {
         description: 'Reads and manages calendar collections',
         actions: ['read', 'create', 'update', 'delete'],
       },
+      {
+        name: 'calendar_schedule',
+        description: 'Read-only planning',
+        actions: ['agenda', 'free-slots', 'conflicts'],
+      },
+      {
+        name: 'calendar_batch',
+        description: 'Multi-event calendar writes',
+        actions: [
+          'create-events',
+          'delete-events',
+          'cancel-occurrences',
+          'create-class-schedule',
+          'schedule-study-blocks',
+        ],
+      },
+      {
+        name: 'reminders_batch',
+        description: 'Multi-reminder writes',
+        actions: ['create', 'update', 'complete', 'delete'],
+      },
     ])('should define $name tool with correct schema and actions', ({
       name,
       description,
@@ -91,6 +112,56 @@ describe('Tools Definitions', () => {
       expect(calendarProps).toHaveProperty('recurrenceRules');
       expect(calendarProps).toHaveProperty('clearRecurrence');
       expect(calendarProps).toHaveProperty('span');
+      // Targets one meeting of a recurring series rather than the first.
+      expect(calendarProps).toHaveProperty('occurrenceDate');
+    });
+
+    it('should expose the full EKRecurrenceRule surface on events', () => {
+      const calendarEventsTool = TOOLS.find(
+        (tool) => tool.name === 'calendar_events',
+      );
+      const recurrenceItems = (
+        calendarEventsTool?.inputSchema.properties?.recurrenceRules as
+          | { items?: { properties?: Record<string, unknown> } }
+          | undefined
+      )?.items?.properties;
+
+      expect(recurrenceItems).toHaveProperty('daysOfWeek');
+      expect(recurrenceItems).toHaveProperty('daysOfMonth');
+      expect(recurrenceItems).toHaveProperty('monthsOfYear');
+      // Needed for "last Friday of the month" style rules.
+      expect(recurrenceItems).toHaveProperty('weeksOfYear');
+      expect(recurrenceItems).toHaveProperty('daysOfYear');
+      expect(recurrenceItems).toHaveProperty('setPositions');
+    });
+
+    it('should define the planning and batch tool parameters', () => {
+      const scheduleProps =
+        TOOLS.find((tool) => tool.name === 'calendar_schedule')?.inputSchema
+          .properties ?? {};
+      expect(scheduleProps).toHaveProperty('dayStart');
+      expect(scheduleProps).toHaveProperty('dayEnd');
+      expect(scheduleProps).toHaveProperty('durationMinutes');
+      expect(scheduleProps).toHaveProperty('bufferMinutes');
+      expect(scheduleProps).toHaveProperty('slots');
+
+      const batchProps =
+        TOOLS.find((tool) => tool.name === 'calendar_batch')?.inputSchema
+          .properties ?? {};
+      expect(batchProps).toHaveProperty('events');
+      expect(batchProps).toHaveProperty('classes');
+      expect(batchProps).toHaveProperty('skipRanges');
+      expect(batchProps).toHaveProperty('occurrenceDates');
+      expect(batchProps).toHaveProperty('totalMinutes');
+      expect(batchProps).toHaveProperty('dryRun');
+
+      const reminderBatchProps =
+        TOOLS.find((tool) => tool.name === 'reminders_batch')?.inputSchema
+          .properties ?? {};
+      expect(reminderBatchProps).toHaveProperty('reminders');
+      expect(reminderBatchProps).toHaveProperty('updates');
+      // Titles let the model act without looking an ID up first.
+      expect(reminderBatchProps).toHaveProperty('titles');
     });
 
     it('should enforce tool name pattern compliance', () => {

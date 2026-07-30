@@ -137,6 +137,7 @@ export const handleUpdateCalendarEvent = async (
       recurrenceRules: validatedArgs.recurrenceRules,
       clearRecurrence: validatedArgs.clearRecurrence,
       span: validatedArgs.span,
+      occurrenceDate: validatedArgs.occurrenceDate,
     });
     return formatSuccessMessage('updated', 'event', event.title, event.id);
   }, 'update calendar event');
@@ -150,7 +151,11 @@ export const handleDeleteCalendarEvent = async (
       args,
       DeleteCalendarEventSchema,
     );
-    await calendarRepository.deleteEvent(validatedArgs.id, validatedArgs.span);
+    await calendarRepository.deleteEvent(
+      validatedArgs.id,
+      validatedArgs.span,
+      validatedArgs.occurrenceDate,
+    );
     return formatDeleteMessage('event', validatedArgs.id, {
       useQuotes: true,
       useIdPrefix: true,
