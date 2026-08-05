@@ -175,6 +175,41 @@ describe("executeAppleScript", () => {
       expect(result.error).toContain("System Settings");
     });
 
+    it("routes an Automation denial to the Automation pane", () => {
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("execution error: Not authorized to send Apple events (-1743)");
+      });
+
+      expect(executeAppleScript("test").error).toContain("Automation");
+    });
+
+    it("routes EPERM to the folder-relocation fix, not the Automation pane", () => {
+      // macOS words a TCC folder-service denial as "Operation not permitted".
+      // It used to be caught by the Automation mapping, which sent the user to a
+      // pane that cannot fix it — the misdirection that made the outage expensive.
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("EPERM: operation not permitted, open '/x/package.json'");
+      });
+
+      const result = executeAppleScript("test");
+
+      expect(result.error).toContain("EPERM");
+      expect(result.error).toContain("~/Documents");
+      expect(result.error).toContain("claude_desktop_config.json");
+      expect(result.error).not.toContain("Privacy & Security > Automation");
+    });
+
+    it("does not recommend Full Disk Access for a folder-service denial", () => {
+      mockExecFileSync.mockImplementation(() => {
+        throw new Error("Operation not permitted");
+      });
+
+      // FDA does not satisfy SystemPolicyDocumentsFolder for a spawned child.
+      expect(executeAppleScript("test").error).toContain(
+        "granting Full Disk Access does not lift this",
+      );
+    });
+
     it("provides helpful message for folder not found", () => {
       mockExecFileSync.mockImplementation(() => {
         throw new Error('Can\'t get folder "Work".');

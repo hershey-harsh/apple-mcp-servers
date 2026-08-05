@@ -469,5 +469,49 @@ describe('ErrorHandling', () => {
         expect(text).toContain('Full Calendar Access');
       });
     });
+
+    describe('environmental errors survive production sanitization', () => {
+      // Regression guard for the July 2026 outage: every one of these collapsed to
+      // "System error occurred" outside dev mode, which is why a TCC folder denial
+      // took hours to identify. None of them expose user data.
+      const cases: Array<[string, string]> = [
+        ['EPERM / TCC folder denial', "EPERM: operation not permitted, open '/x'"],
+        ['bare EPERM code', 'spawn EPERM'],
+        ['EACCES file mode', "EACCES: permission denied, open '/x'"],
+        ['ENOBUFS oversized output', 'spawnSync /bin/sh ENOBUFS'],
+        ['ETIMEDOUT', 'spawnSync osascript ETIMEDOUT'],
+        ['ENOENT missing binary', "ENOENT: no such file or directory, stat '/x'"],
+        ['Automation denial', 'Not authorized to send Apple events. (-1743)'],
+      ];
+
+      it.each(cases)('keeps %s visible in production', async (_label, raw) => {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DEBUG;
+
+        const result = await handleAsyncOperation(
+          jest.fn().mockRejectedValue(new Error(raw)),
+          'read calendar events',
+        );
+
+        const text = (result.content[0] as { type: 'text'; text: string }).text;
+        expect(result.isError).toBe(true);
+        expect(text).toContain(raw);
+        expect(text).not.toContain('System error occurred');
+      });
+
+      it('still sanitizes errors that carry no diagnostic value', async () => {
+        process.env.NODE_ENV = 'production';
+        delete process.env.DEBUG;
+
+        const result = await handleAsyncOperation(
+          jest.fn().mockRejectedValue(new Error('internal detail about a note')),
+          'read calendar events',
+        );
+
+        const text = (result.content[0] as { type: 'text'; text: string }).text;
+        expect(text).toContain('System error occurred');
+        expect(text).not.toContain('internal detail about a note');
+      });
+    });
   });
 });

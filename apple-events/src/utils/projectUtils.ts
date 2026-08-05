@@ -3,10 +3,14 @@
  * Shared utilities for project-related operations
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FILE_SYSTEM } from './constants.js';
+import {
+  type AccessDenial,
+  describeAccessDenial,
+  locateProjectRoot,
+} from './projectRootSearch.js';
 
 /**
  * Finds the project root directory by looking for package.json
@@ -19,63 +23,23 @@ export function findProjectRoot(
 ): string {
   // Derive the starting directory from the current module's location for robustness.
   const currentDir = getCurrentModuleDir();
-  const root = locateProjectRoot(currentDir, maxDepth);
+  const denials: AccessDenial[] = [];
+  const root = locateProjectRoot(currentDir, maxDepth, denials);
 
   if (root) {
     return root;
   }
 
+  // A permission denial and a genuinely absent package.json both end the walk with
+  // no root, but they are completely different problems with completely different
+  // fixes. Reporting the generic message for a denial is what made a repo-wide TCC
+  // outage present as an unexplained startup crash — this function runs at module
+  // load time, so the failure surfaces to the user as "Server disconnected".
+  if (denials.length > 0) {
+    throw new Error(describeAccessDenial(denials[0], currentDir));
+  }
+
   throw new Error(`Project root not found within ${maxDepth} directory levels`);
-}
-
-/**
- * Attempts to find the project root starting from the provided directory.
- * @param startDir - Directory to begin the search from
- * @param maxDepth - Maximum directory levels to traverse upward
- * @returns The project root when found, otherwise `undefined`
- */
-function locateProjectRoot(
-  startDir: string,
-  maxDepth = FILE_SYSTEM.MAX_DIRECTORY_SEARCH_DEPTH,
-): string | undefined {
-  let currentDir = startDir;
-  let depth = 0;
-
-  while (depth < maxDepth) {
-    if (isCorrectProjectRoot(currentDir)) {
-      return currentDir;
-    }
-
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
-      break; // Reached filesystem root
-    }
-
-    currentDir = parentDir;
-    depth++;
-  }
-
-  return undefined;
-}
-
-/**
- * Checks if a directory contains the correct package.json for this project
- */
-function isCorrectProjectRoot(dir: string): boolean {
-  const packageJsonPath = path.join(dir, FILE_SYSTEM.PACKAGE_JSON_FILENAME);
-  if (!fs.existsSync(packageJsonPath)) {
-    return false;
-  }
-
-  try {
-    const packageContent = fs.readFileSync(packageJsonPath, 'utf8');
-    const packageData = JSON.parse(packageContent);
-    return packageData.name === 'apple-events-mcp';
-  } catch {
-    // Silently return false for any read/parse errors during project root discovery
-    // This allows the search to continue up the directory tree
-    return false;
-  }
 }
 
 /**

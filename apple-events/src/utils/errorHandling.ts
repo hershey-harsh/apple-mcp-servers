@@ -16,10 +16,34 @@ const USER_ACTIONABLE_PERMISSION_PATTERNS = [
   /full reminder access/i,
 ] as const;
 
+/**
+ * Environmental failures that must never be replaced by the generic production
+ * message. These say nothing about user data — they describe the machine the server
+ * is running on — and they are precisely the errors that are impossible to diagnose
+ * once collapsed to "System error occurred".
+ *
+ * EPERM is the one that matters most: macOS reports a TCC folder-service denial as
+ * "Operation not permitted", which none of the permission patterns above match
+ * ("not permitted" is not "permission denied").
+ */
+const DIAGNOSTIC_ERROR_PATTERNS = [
+  /operation not permitted/i, // EPERM — TCC denial
+  /\bEPERM\b/,
+  /\bEACCES\b/, // ordinary file-mode denial
+  /\bENOBUFS\b/, // output exceeded maxBuffer; surfaces as an EMPTY result
+  /\bETIMEDOUT\b/,
+  /\bENOENT\b/, // missing binary/path — actionable, not sensitive
+  /-1743/, // Automation (Apple Events) denial
+] as const;
+
 function isUserActionablePermissionError(message: string): boolean {
   return USER_ACTIONABLE_PERMISSION_PATTERNS.some((pattern) =>
     pattern.test(message),
   );
+}
+
+function isDiagnosticError(message: string): boolean {
+  return DIAGNOSTIC_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 /**
@@ -63,7 +87,9 @@ function createErrorMessage(operation: string, error: unknown): string {
   }
 
   // Permission failures are user-actionable and should stay visible in production.
-  if (isUserActionablePermissionError(message)) {
+  // Environmental failures (EPERM/EACCES/ENOBUFS/timeouts) are too, and are the ones
+  // that turn into multi-hour debugging sessions when sanitized away.
+  if (isUserActionablePermissionError(message) || isDiagnosticError(message)) {
     return `Failed to ${operation}: ${message}`;
   }
 

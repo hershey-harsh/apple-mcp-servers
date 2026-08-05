@@ -1,0 +1,990 @@
+[
+ {
+  "server": "apple-maps",
+  "language": "python",
+  "usesAppleScript": false,
+  "primaryBackend": "cli-binary \u2014 a locally compiled Swift/MapKit helper (apple_maps_bridge.swift \u2192 ~/.apple-mcps/build/apple-maps-bridge) invoked via subprocess.run with argv[1]=command, argv[2]=JSON payload; plus one /usr/bin/open call. No osascript, no JXA, no sqlite, no HTTP API (MapKit is linked in-process by the Swift helper, not called over the wire by Python).",
+  "executor": {
+   "files": [
+    "apple-maps/src/apple_maps_mcp/maps_bridge.py",
+    "apple-maps/src/apple_maps_mcp/apple_maps_bridge.swift",
+    "apple-maps/src/apple_maps_mcp/tools.py"
+   ],
+   "mechanism": "subprocess.run(..., capture_output=True, check=True, text=True, timeout=self.timeout_seconds) \u2014 two call sites in maps_bridge.py (_ensure_helper compiles with swiftc at :39-45; _run_helper executes the built binary at :63-69) and one un-timed call site in tools.py:405 (subprocess.run([\"open\", url], capture_output=True, check=True, text=True) \u2014 no timeout argument).",
+   "hasTimeout": true,
+   "timeoutDefaultMs": 20000,
+   "timeoutIsConfigurable": false,
+   "killsChildOnTimeout": true,
+   "hasRetry": false,
+   "retryStrategy": "none \u2014 no retry anywhere. Every failure path raises MapsBridgeError on the first attempt. The only 'retry' is textual: the suggestion strings tell the *user* to retry ('Retry the request.' at maps_bridge.py:74, :78, :82).",
+   "hasOutputCap": false,
+   "releasesAppEventQueue": true,
+   "totalLines": 103
+  },
+  "errorHandling": {
+   "files": [
+    "apple-maps/src/apple_maps_mcp/maps_bridge.py",
+    "apple-maps/src/apple_maps_mcp/tools.py",
+    "apple-maps/src/apple_maps_mcp/apple_maps_bridge.swift"
+   ],
+   "classifiesPermissionErrors": false,
+   "recognizedStrings": [],
+   "recognizesEperm": false,
+   "recognizesEacces": false,
+   "recognizesAutomation1743": false,
+   "remedyQuality": "generic",
+   "swallowsDetailInProduction": true
+  },
+  "diagnostics": {
+   "hasDoctor": false,
+   "toolNames": [
+    "maps_health",
+    "maps_permission_guide",
+    "maps://status (MCP resource, not a tool \u2014 tools.py:46-62)"
+   ],
+   "checksPerformed": [
+    "helper_source.exists() \u2014 Path.exists() on the packaged .swift file (maps_bridge.py:26)",
+    "helper_binary.exists() \u2014 Path.exists() on ~/.apple-mcps/build/apple-maps-bridge (maps_bridge.py:26)",
+    "echoes static config: server_name, version, transport (tools.py:82-97)",
+    "echoes a hardcoded capabilities[] list and supports[] list \u2014 string literals, not probed (tools.py:88-96)",
+    "maps://status echoes a hardcoded supported_transports list [driving, walking, transit] (tools.py:60)",
+    "maps_permission_guide returns a fully hardcoded dict with no probing at all (tools.py:106-117)"
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "Whether swiftc / Xcode command line tools are installed and on PATH \u2014 only discovered as a FileNotFoundError at the first real routing call, never by maps_health",
+    "Whether the helper binary is executable, and whether it is STALE relative to the source \u2014 helper_available() only calls .exists(); the mtime staleness gate at maps_bridge.py:36 is not surfaced anywhere",
+    "Any smoke invocation of the helper \u2014 maps_health never runs the binary, so a binary that exists but crashes (wrong arch, unsigned, quarantined) reports healthy",
+    "Readability of helper_source and writability of the build directory \u2014 i.e. exactly the EPERM/TCC folder-service denial that killed the fleet. A repo under ~/Documents passes maps_health, then fails at first use with raw swiftc stderr and the misleading suggestion 'Install Xcode command line tools and retry.' (maps_bridge.py:57)",
+    "Whether the repo/helper path sits under a TCC-protected folder (~/Documents, ~/Desktop, ~/Downloads, iCloud Drive)",
+    "Location Services authorization state \u2014 MapKit routing depends on it and nothing checks it",
+    "Network reachability \u2014 MKLocalSearch/MKDirections are network calls; offline surfaces as SEARCH_TIMEOUT with 'confirm Maps services are available on this Mac' (swift:90) rather than 'you are offline'",
+    "The effective env-resolved build directory path and the effective timeout value \u2014 APPLE_MAPS_MCP_HELPER_BUILD_DIR is honored (config.py:31-36) but never reported, so a misconfigured build dir is invisible",
+    "LaunchServices / `open` availability \u2014 maps_open_directions_in_maps is never probed",
+    "macOS version, arch, and Swift toolchain version",
+    "Any pass/fail/remedy structure \u2014 maps_health returns bare booleans with no remedy text, no severity, and no per-check status object"
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "maps_get_directions \u2014 single route; Swift takes routeResponse.routes.first only (swift:116), fixed-shape payload",
+    "maps_compare_travel_times \u2014 hard-capped at 10 destinations (tools.py:211) x 4 transports (tools.py:218), so <=40 TravelOption rows; buffer_minutes clamped 0-240 (tools.py:224)",
+    "maps_check_campus_hops \u2014 hard-capped at 12 hops (tools.py:280); buffer_minutes clamped 0-120 (tools.py:286)",
+    "maps_build_maps_link \u2014 single URL string",
+    "maps_open_directions_in_maps \u2014 single URL string",
+    "maps_health \u2014 fixed-shape HealthResponse",
+    "maps_permission_guide \u2014 hardcoded dict",
+    "maps_list_prompts / maps_get_prompt_prompt \u2014 enumerate the in-process prompt registry, which holds exactly one prompt (maps_plan_route)"
+   ],
+   "unboundedTools": [
+    "maps_search_places \u2014 the DEFAULT is applied (limit: int = 5 at tools.py:126, and independently defaultValue: 5 in the Swift arg parser at swift:69), but NO UPPER CAP is applied anywhere. limit flows verbatim tools.py:128 -> maps_bridge.py:85 -> swift:69 -> response.mapItems.prefix(limit) (swift:94). limit=100000 is accepted; in practice MKLocalSearch itself returns roughly <=10 items so real exposure is small, but the code contributes no bound. Worse, a NEGATIVE limit passes both validators and reaches Swift's Collection.prefix(_:), whose precondition maxLength >= 0 traps \u2014 the helper dies and Python reports the opaque HELPER_FAILED.",
+    "maps_get_directions / maps_compare_travel_times / maps_check_campus_hops \u2014 advisory_notices is copied straight from MKRoute.advisoryNotices (swift:126) into an uncapped list[str] (models.py:50, :64) with no per-string or per-list truncation. Small in practice, unbounded in code.",
+    "Error path of every bridge-backed tool \u2014 the HELPER_FAILED message is the helper's ENTIRE stderr, uncapped (maps_bridge.py:77-78). A verbose swiftc diagnostic or crash dump reaches the model verbatim."
+   ],
+   "capAndDiscloseHelper": "none \u2014 no truncation helper, no `truncated: true` flag, and no `total` vs `returned` disclosure in any model in apple-maps/src/apple_maps_mcp/models.py. The count/succeeded/failed fields on TravelMatrixResponse and CampusHopResponse describe outcomes, not truncation."
+  },
+  "framing": {
+   "usesRecordSeparators": false,
+   "recordSep": "none \u2014 exactly one JSON document per process invocation; the process boundary is the record boundary",
+   "fieldSep": "none \u2014 argv carries the structure: argv[1] is the command name ('search-places' | 'directions'), argv[2] is a single json.dumps'd payload object (maps_bridge.py:64, consumed at swift:50-55)",
+   "parserLocation": "apple-maps/src/apple_maps_mcp/maps_bridge.py:79-82 \u2014 json.loads(result.stdout), with json.JSONDecodeError mapped to error_code INVALID_RESPONSE",
+   "notes": "The success and error channels are SPLIT and only one is parsed. Success: encoder.encode(...) written to stdout (swift:57). Error: ErrorPayload{ok,error_code,message,suggestion} written as JSON to STDERR then exit(1) (swift:227-233). Python's CalledProcessError handler at maps_bridge.py:76-78 does `stderr = exc.stderr.strip() or exc.stdout.strip()` and stuffs that raw text into MapsBridgeError('HELPER_FAILED', stderr) \u2014 it never json.loads() it. Every structured Swift code (PLACE_NOT_FOUND, ROUTE_NOT_FOUND, SEARCH_TIMEOUT, DIRECTIONS_TIMEOUT, INVALID_INPUT, UNKNOWN_COMMAND, USAGE_ERROR, UNEXPECTED_ERROR) is therefore flattened to HELPER_FAILED with a raw JSON blob as the human-readable message. A shared kernel should own this envelope on both sides."
+  },
+  "tests": {
+   "framework": "pytest (>=8,<10, declared under [project.optional-dependencies] dev in apple-maps/pyproject.toml:29-32); [tool.pytest.ini_options] sets pythonpath=[\"src\"], testpaths=[\"tests\"]",
+   "command": "cd apple-maps && uv run --quiet --with pytest python -m pytest -q",
+   "count": 6,
+   "passing": true,
+   "requiresTccGrants": false
+  },
+  "hardWonKnowledge": [
+   "INNER TIMEOUT SHORTER THAN OUTER \u2014 the same invariant apple-notes encodes for AppleScript, re-derived here for MapKit, with the SAME 5-second gap: `static let asyncTimeoutSeconds: TimeInterval = 15` (apple-maps/src/apple_maps_mcp/apple_maps_bridge.swift:41) against `self.timeout_seconds = 20` (apple-maps/src/apple_maps_mcp/maps_bridge.py:23). Swift races the MapKit call against a Task.sleep inside a throwing task group and cancelAll()s the loser (swift:204-225), so the helper emits a structured SEARCH_TIMEOUT/DIRECTIONS_TIMEOUT JSON error and exits cleanly instead of being SIGKILLed mid-call. CAVEAT THE KERNEL MUST FIX RATHER THAN COPY: the 15s bound is PER MAPKIT OPERATION, not per process. The `directions` command runs three sequentially \u2014 resolveFirstMapItem(origin) swift:99, resolveFirstMapItem(destination) swift:100, directions.calculate() swift:108-114 \u2014 so worst case is 45s inside a 20s outer timeout and the invariant is violated exactly when it matters most. The kernel should hand the child a single absolute deadline, not a per-call constant.",
+   "COMPILE-ON-FIRST-USE WITH AN MTIME STALENESS GATE \u2014 `if self.helper_binary.exists() and self.helper_binary.stat().st_mtime >= self.helper_source.stat().st_mtime: return` (apple-maps/src/apple_maps_mcp/maps_bridge.py:36). This is the entire build system. Intent is documented in apple-maps/start.sh:4-5: \"The Swift Maps helper is compiled on first use (swiftc). Editing files under this folder takes effect on the next launch \u2014 no manual build step.\" Without the mtime comparison every tool call pays a multi-second `swiftc -O`; without the rebuild leg, editing the .swift file silently does nothing. Verified live: source mtime Jul 29 11:58, binary mtime Jul 29 12:18, so no rebuild fires.",
+   "`swiftc -parse-as-library` IS LOAD-BEARING, NOT COSMETIC \u2014 apple-maps/src/apple_maps_mcp/maps_bridge.py:40: `[\"swiftc\", \"-parse-as-library\", \"-O\", str(self.helper_source), \"-o\", str(self.helper_binary)]`. The helper is a single .swift file using `@main struct AppleMapsBridge` with `static func main() async` (swift:39-48). A lone .swift file compiled WITHOUT -parse-as-library is treated as top-level script code and swiftc then rejects @main. Anyone tidying this flag list reintroduces a hard compile failure that surfaces as the near-useless HELPER_COMPILE_FAILED. There is no comment explaining this \u2014 the knowledge exists only in the argv array.",
+   "BUILD ARTIFACT IS DELIBERATELY WRITTEN OUTSIDE THE REPO, AND IS THE SERVER'S ONLY ENV ESCAPE HATCH \u2014 apple-maps/src/apple_maps_mcp/config.py:31-36 resolves the build dir from `APPLE_MAPS_MCP_HELPER_BUILD_DIR`, defaulting to `~/.apple-mcps/build`. Directly relevant to the post-mortem: had the binary been emitted next to the .swift source, a repo under ~/Documents would have been denied the WRITE as well as the read. A grep across the monorepo (excluding node_modules/.venv/.git) finds exactly ONE reference to `apple-mcps` \u2014 this config.py line \u2014 so the deliberately generic directory name is aspirational; no other server shares it. The kernel should adopt this path and make it genuinely shared.",
+   "STRUCTURED ERROR CODES FROM THE HELPER ARE SILENTLY DISCARDED \u2014 a live bug, and a requirement for the kernel design. Swift emits a full envelope on stderr then exits 1 via writeErrorAndExit (apple_maps_bridge.swift:227-233). Python catches it at apple-maps/src/apple_maps_mcp/maps_bridge.py:76-78: `stderr = exc.stderr.strip() or exc.stdout.strip()` / `raise MapsBridgeError(\"HELPER_FAILED\", stderr or \"Apple Maps helper failed.\", \"Retry the request.\")` \u2014 it never json.loads() the stderr. Result: PLACE_NOT_FOUND, ROUTE_NOT_FOUND, SEARCH_TIMEOUT, DIRECTIONS_TIMEOUT, INVALID_INPUT and UNKNOWN_COMMAND all reach the model as error_code HELPER_FAILED with a raw JSON string as the message, and the actionable suggestion the helper computed is thrown away. The kernel needs a first-class 'child process speaks a structured error envelope' contract on BOTH sides.",
+   "PARTIAL FAILURE IS A FIRST-CLASS RESULT, NOT AN EXCEPTION \u2014 the only substantive explanatory comment in the server, apple-maps/src/apple_maps_mcp/tools.py:158-159: \"Prices a single origin\u2192destination leg, returning a failed option rather than raising so one bad address cannot sink a whole comparison.\" Backed by TravelOption.ok / TravelOption.error (models.py:59, :66-68), the succeeded/failed counters on TravelMatrixResponse (tools.py:249-251), and reused by maps_check_campus_hops (tools.py:336-348). Consequence for the kernel: the TCC error taxonomy must be EMBEDDABLE per item, not only throwable \u2014 a fan-out of 40 legs where 3 hit a permission error needs 3 typed error objects inside a successful response, not one exception.",
+   "THE `open` CALL IS THE ONE UNGOVERNED SUBPROCESS AND IT SWALLOWS EVERYTHING \u2014 apple-maps/src/apple_maps_mcp/tools.py:405 `subprocess.run([\"open\", url], capture_output=True, check=True, text=True)` has NO timeout (it can hang the server indefinitely), and tools.py:407-410 discards the real stderr unconditionally: `return _error_response(\"OPEN_FAILED\", \"Failed to open Apple Maps.\", \"Retry the request.\")`. There is no dev-mode gate \u2014 the detail is destroyed in every environment. A LaunchServices or TCC denial here is indistinguishable from a typo in the URL.",
+   "maps_permission_guide ASSERTS THIS SERVER HAS NO PERMISSION REQUIREMENTS \u2014 apple-maps/src/apple_maps_mcp/tools.py:110-111 hardcodes `\"can_prompt_in_app\": False, \"requires_manual_system_settings\": False`, and steps[] mentions only Xcode command line tools. It is a static dict with zero probing, and it is wrong for precisely the failure mode that took the fleet down: a folder-service EPERM reading the .swift source, or writing the build dir, needs a Privacy & Security pane visit. This claim must NOT be inherited by the kernel's doctor contract.",
+   "APPLE MAPS URL dirflg TRANSPORT CODES, DUPLICATED IN TWO LANGUAGES \u2014 apple-maps/src/apple_maps_mcp/maps_bridge.py:96: `{\"driving\": \"d\", \"walking\": \"w\", \"transit\": \"r\"}.get(transport, \"d\")`. The 'r' for transit is non-obvious (Apple's legacy 'rail' flag, not 't'), and the `.get(..., \"d\")` fallback means an unrecognized mode silently becomes driving rather than erroring. The Swift side keeps an independent copy of the same mapping at swift:163-172 (default .automobile) \u2014 two sources of truth for one concept.",
+   "ERROR CLASSIFICATION IS PURELY BY PYTHON EXCEPTION TYPE, WITH ZERO STRING MATCHING \u2014 verified by grep across apple-maps/src, tests, server.py and start.sh: the tokens 'permitted', 'denied', 'EPERM', 'EACCES', '1743', 'TCC', 'errno', 'authoriz' and 'System Settings' appear NOWHERE (the only 'permission' hits are the tool name maps_permission_guide). Consequently 'Operation not permitted' -> NOT recognized; '-1743' -> NOT recognized; 'Permission denied' -> NOT recognized. All three land in HELPER_COMPILE_FAILED (swiftc stderr echoed verbatim with the misleading suggestion 'Install Xcode command line tools and retry.', maps_bridge.py:54-58), HELPER_FAILED (raw stderr, suggestion 'Retry the request.', maps_bridge.py:78), or OPEN_FAILED (detail destroyed entirely). This server has the least to unlearn of the seven and is the cheapest place to land the kernel taxonomy first.",
+   "TEST TOOLING DRIFT WORTH FIXING BEFORE THE CI MATRIX \u2014 pytest is declared in apple-maps/pyproject.toml:29-32 under the `dev` optional-dependency group, but the checked-in .venv was never synced with it: `.venv/bin/python -m pytest` fails with 'No module named pytest'. The suite only runs via an overlay, e.g. `uv run --with pytest python -m pytest -q` (6 tests, all passing, 0.27s). P3.6 needs an explicit `uv sync --extra dev` / `--extra dev` step or this server will look broken in CI."
+  ],
+  "migrationRisk": "low",
+  "migrationRiskReason": "Smallest and cleanest of the seven: a 103-line executor, one command surface, no AppleScript, no Apple Events, no sqlite, no string-based error classification to port, and a 6-test fully-mocked suite that runs in 0.27s with no TCC grants. Two real risks. (1) SHAPE MISMATCH: this executor is 'compile a Swift source on first use behind an mtime gate, then exec the resulting binary with argv[1]=command / argv[2]=JSON, parse a JSON envelope off stdout and a second JSON envelope off stderr on failure'. An osascript-centric kernel that models only 'run this script text, get text back' cannot express the compile step, the -parse-as-library flag, the build-dir env override, or the stderr error envelope \u2014 and dropping any of those silently breaks the server. (2) The 15s/20s inner/outer pairing is PER-OPERATION, not per-process, so it is already wrong for the `directions` command (up to 45s of inner work under a 20s outer kill); porting it verbatim carries the bug forward. Everything else \u2014 no retry, no output cap, no permission classification, no doctor \u2014 is greenfield rather than migration."
+ },
+ {
+  "server": "apple-mail",
+  "language": "python",
+  "usesAppleScript": true,
+  "primaryBackend": "osascript",
+  "executor": {
+   "files": [
+    "apple-mail/plugin/apple_mail_mcp/core.py",
+    "apple-mail/plugin/apple_mail_mcp/tools/compose.py"
+   ],
+   "mechanism": "PRIMARY: core.run_applescript() -> subprocess.Popen(['osascript','-'], stdin/stdout/stderr=PIPE) + proc.communicate(input=script.encode(), timeout=N). Script is piped on stdin (not -e / not a temp file). SECOND, UNDECLARED EXECUTOR: tools/compose.py calls subprocess.run(['osascript','-'], input=..., capture_output=True, timeout=30) directly at lines 557, 964 and 1404, bypassing run_applescript entirely (needed for AppleScriptObjC 'use framework' scripts). compose.py:356 also runs subprocess.run(['open','-a','Mail', str(draft_path)], check=True) with NO timeout at all.",
+   "hasTimeout": true,
+   "timeoutDefaultMs": 120000,
+   "timeoutIsConfigurable": true,
+   "killsChildOnTimeout": true,
+   "hasRetry": false,
+   "retryStrategy": "No transport-level retry anywhere. The only loop is compose.py:236-264 _save_open_message_as_draft(retries=10, delay_seconds=0.5) which re-runs a *different* AppleScript polling for Mail to expose the open outgoing message; it breaks immediately on 'error:' and is a poll, not an error retry. IMPORTANT for the kernel: a generic retry-on-failure MUST NOT be applied to compose_email / reply_to_email / forward_email / redirect_email / manage_drafts(send) \u2014 these end in 'send newMessage' / Cmd+Shift+D keystrokes, so a retry after an ambiguous timeout sends the email twice.",
+   "hasOutputCap": false,
+   "releasesAppEventQueue": true,
+   "totalLines": 572
+  },
+  "errorHandling": {
+   "files": [
+    "apple-mail/plugin/apple_mail_mcp/core.py",
+    "apple-mail/plugin/apple_mail_mcp/tools/raw_source.py",
+    "apple-mail/plugin/apple_mail_mcp/tools/search.py",
+    "apple-mail/plugin/apple_mail_mcp/tools/manage.py",
+    "apple-mail/plugin/apple_mail_mcp/tools/compose.py"
+   ],
+   "classifiesPermissionErrors": false,
+   "recognizedStrings": [
+    "\"Error:\" (prefix) \u2014 raw_source.py:174 `result.startswith(\"Error:\")`, manage.py:405 `listing.startswith(\"Error:\")` \u2014 control flow only, not classification",
+    "\"ERROR|||\" (prefix) \u2014 search.py:547, re-raised as ValueError, then returned as `f\"Error: {exc}\"` at search.py:645",
+    "\"saved\" / \"not-found\" / \"error:\" \u2014 compose.py:258-262 sentinels from the draft-save poll",
+    "\"skip\" \u2014 manage.py:359/364 AppleScript-internal sentinel raised by `error \"skip\"` to skip a message",
+    "errNum is -1712 (AppleScript timeout) \u2014 manage.py:1382 and manage.py:1408, inside synchronize_account only; the ONLY OSStatus code recognized anywhere in the server",
+    "String prefixes rewritten on the way out: core.py:208 \"AppleScript execution timed out\", core.py:210 f\"AppleScript execution failed: {str(e)}\", core.py:218 f\"AppleScript error: {stderr_text}\""
+   ],
+   "recognizesEperm": false,
+   "recognizesAutomation1743": false,
+   "recognizesEacces": false,
+   "remedyQuality": "none",
+   "swallowsDetailInProduction": false
+  },
+  "diagnostics": {
+   "hasDoctor": false,
+   "toolNames": [],
+   "checksPerformed": [
+    "None at runtime. The server registers 31 tools and not one is a health/doctor/diagnostic tool.",
+    "Closest thing to a self-check is `list_accounts` (inbox.py:351) \u2014 a bare `every account` enumeration that will fail with a TCC Automation error if the grant is missing, but it reports the raw AppleScript stderr with no interpretation.",
+    "Build-time only: scripts/check_versions.py asserts version strings agree across pyproject.toml / __init__.py / optional manifest.json / optional server.json (tests/test_version_consistency.py). Not a runtime diagnostic."
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "Automation (Apple Events) grant for Mail.app \u2014 the single most likely failure and the one thing README.md:20 says the user must grant",
+    "TCC folder-service denial on the repo path (the ~/Documents EPERM that killed all 7 servers) \u2014 apple-mail cannot even report where it is running from",
+    "Full Disk Access status of the launching process",
+    "Whether Mail.app is running / launchable at all",
+    "Whether at least one account is configured (every tool takes an `account` name and fails opaquely on a typo)",
+    "Mapping of account display name -> email addresses as a connectivity probe (the data exists via list_account_addresses but is not used diagnostically)",
+    "Python runtime / uv provenance and code-signing status (README.md:62 says apple-notes' doctor reports this; apple-mail has no equivalent)",
+    "Version + install path self-report",
+    "Whether the inbox mailbox resolved through the localized INBOX_NAMES list, or fell through all 11 names (core.py:339-351) \u2014 a silent, very confusing failure on Exchange/non-English systems",
+    "Read-only mode state (server.READ_ONLY is set from --read-only but is never reported to the client)"
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "list_inbox_emails \u2014 max_emails=25 default; AppleScript enforces `if {max_emails} > 0 and currentIndex > {max_emails} then exit repeat` (inbox.py:101, 186). NOTE: max_emails=0 is a documented uncap (\"Pass 0 for no cap\", inbox.py:66)",
+    "search_emails \u2014 limit defaults to max_results=20; AppleScript decrements collectLimit={limit+1} and exits (search.py:441, 516-517); Python slices `sorted_records[:limit]` and discloses has_more/next_offset (search.py:163-176)",
+    "get_email_thread \u2014 max_messages=50 default, enforced at search.py:713",
+    "get_email_source \u2014 DEFAULT_MAX_BYTES = 256*1024 with a real cap-and-disclose helper `_apply_size_cap` that truncates on UTF-8 byte length at a character boundary and appends '[... truncated: original size N bytes, cap M bytes ...]' (raw_source.py:36-55)",
+    "get_awaiting_reply / get_needs_response \u2014 max_results=20 default, enforced in the AppleScript loop (smart_inbox.py:157, 315)",
+    "get_top_senders \u2014 top_n=10, output is the sorted top-N only (smart_inbox.py:564-578)",
+    "get_statistics \u2014 all three scopes emit a fixed-size aggregate report (top 5 senders, top 5 mailboxes). Response bounded; the *work* is not (account_overview iterates every message of every non-skip mailbox with only the 120 s default timeout)",
+    "export_emails \u2014 max_emails=1000 default, and output goes to disk; the reply is a fixed summary",
+    "list_email_attachments \u2014 max_results=1 default",
+    "move_email (max_moves=50) / update_email_status (max_updates=10) / manage_trash (max_deletes=5) / save_all_attachments (max_emails=50, max_attachments=100, both clamped to 1..500 at manage.py:330-331)",
+    "list_accounts / list_account_addresses \u2014 bounded in practice by the number of configured Mail accounts (single digits); no explicit cap in code"
+   ],
+   "unboundedTools": [
+    "list_mailboxes (inbox.py:436-528) \u2014 VERIFIED: `repeat with aMailbox in (every mailbox of anAccount)` plus a nested `every mailbox of aMailbox` loop, for every account, with per-mailbox message counts. No limit parameter exists at all. A Gmail account with hundreds of labels renders every one.",
+    "get_mailbox_unread_counts with summary_only=False (inbox.py:287-334) \u2014 VERIFIED: same every-mailbox + every-sub-mailbox walk across all accounts. include_zero=False only filters zeros; it is not a cap. Returns a nested dict of unbounded size.",
+    "get_inbox_overview (inbox.py:531-715) \u2014 VERIFIED: Section 2 'MAILBOX STRUCTURE' walks every mailbox and every sub-mailbox of every account with no counter. (Sections 1 and 3 are bounded; section 3 caps at 10 messages.) No parameters at all, so a caller cannot bound it.",
+    "manage_drafts action=\"list\" (compose.py:1569-1598) \u2014 VERIFIED: `repeat with aDraft in (every message of draftsMailbox)` with no counter and no limit parameter; prints subject + date for every draft.",
+    "list_signatures (manage.py:1286-1322) \u2014 VERIFIED: `repeat with aSig in (every signature)` with no counter. Each entry is capped at a 140-char preview, so it is bounded per row but not in row count; low risk in practice (users have few signatures) but structurally uncapped.",
+    "list_inbox_emails when the caller passes max_emails=0 \u2014 VERIFIED escape hatch at inbox.py:101/186; the guard is `if {max_emails} > 0 and ...`, so 0 disables it and the whole inbox is rendered."
+   ],
+   "capAndDiscloseHelper": "hand-rolled per tool. The only true cap-and-disclose implementation is raw_source.py:36-55 `_apply_size_cap` (byte-based, UTF-8-boundary-safe, emits a truncation marker). search.py:152-179 `_build_search_response` is a second, unrelated hand-rolled implementation (count-based, emits has_more/next_offset in JSON mode but silently drops the disclosure in text mode). Everything else caps inside generated AppleScript with an `exit repeat`, and most of those do NOT tell the caller that truncation happened."
+  },
+  "tests": {
+   "framework": "pytest running unittest.TestCase classes (stdlib unittest + unittest.mock; no pytest-specific fixtures, no conftest.py, no pytest config in pyproject.toml)",
+   "command": "cd apple-mail && uv run --with pytest python -m pytest tests/ -q",
+   "count": 119,
+   "passing": true,
+   "requiresTccGrants": false
+  },
+  "framing": {
+   "usesRecordSeparators": false,
+   "fieldSep": "\"|||\" is the dominant field separator (search.py, inbox.py json path, analytics.py, smart_inbox.py). Also used: \"|\" (inbox.py list_accounts, list_account_addresses, get_mailbox_unread_counts summary path), \":\" (account:count in the summary path), and \"\\t\" (manage.py save_all_attachments 'ATTACHMENT\\t...' lines).",
+   "recordSep": "linefeed \u2014 set via `set AppleScript's text item delimiters to linefeed` then `return theList as string`. get_mailbox_unread_counts(summary_only=True) is the exception: it joins with \"|\" and has no record separator at all.",
+   "parserLocation": "apple-mail/plugin/apple_mail_mcp/tools/search.py:62-101 (_parse_search_records), tools/inbox.py:17-45 (_parse_pipe_delimited_emails), tools/analytics.py:723-742 (inline in _get_recent_emails_structured), tools/manage.py:409-421 (inline tab parser), tools/inbox.py:268-275 and 341-346 (inline). Five hand-rolled parsers, no shared helper.",
+   "notes": "FRAGILITY THE KERNEL SHOULD FIX: only search.py defends the frame. Its AppleScript `on sanitize_field(value)` handler (search.py:390-407) strips return/linefeed/tab AND rewrites any literal \"|||\" inside a field to \" | \" before joining. None of the other producers do this \u2014 inbox.py:202, analytics.py:705 and smart_inbox.py:361 concatenate raw `subject of aMessage` / `sender of aMessage` straight into a \"|||\"-joined line. An email whose subject contains \"|||\" or a newline silently corrupts or splits the record. Two partial mitigations exist: analytics.py:728 uses `line.split('|||', 5)` with maxsplit so the trailing preview field may contain the separator, and search.py:69 uses `split(\"|||\", 9)` for the same reason on content_preview. core.py:159-168 `_sanitize_for_json` normalizes \\r\\n and \\r to \\n and strips control chars below 0x20 (keeping \\n and \\t) on every osascript result, which is why the linefeed record separator survives at all. This is a genuine record-framing concern: a real record separator (e.g. \\x1e/\\x1f) plus one shared parser would remove five duplicated parsers and a whole class of corruption."
+  },
+  "hardWonKnowledge": [
+   "AppleScript-level timeout injected 5 s shorter than the process timeout \u2014 apple-mail HAS the apple-notes trick. core.py:98-124 `_apply_applescript_timeout`: `inner = max(timeout - 5, 5)` then `with timeout of {inner} seconds\\n{script}\\nend timeout`. Docstring at core.py:99-118: \"The inner timeout is max(timeout - 5, 5) seconds, giving the AppleScript interpreter a chance to exit cleanly before the Python-side communicate(timeout=\u2026) fires.\" TWO CARVE-OUTS THE KERNEL MUST KEEP: (a) core.py:119 skips any script with a line-leading `use ` declaration (ASObjC `use framework \"Foundation\"` in compose.py); (b) core.py:95/121 skips scripts defining handlers \u2014 `_HANDLER_DEFINITION_RE = re.compile(r\"^\\\\s*(?:on|to)\\\\s+(?!error\\\\b)\\\\w+\", re.MULTILINE)`. The negative lookahead on `error` is load-bearing: `on error` is a try clause, not a handler. core.py:110-114 explains why: \"handler definitions are only legal at the top level, so wrapping them fails with 'Expected \\\"end\\\" but found \\\"on\\\"' (-2741, issue #63).\"",
+   "Issue #58 \u2014 two-layer defence against orphaned osascript children. core.py:171-183: \"1. The script is wrapped in an AppleScript `with timeout` block so the interpreter self-terminates even when the parent process is SIGKILLed or exits via os._exit() (e.g. the orphan-watcher in __main__.py). 2. The live Popen object is tracked in `_inflight_children`. An atexit handler and chained SIGTERM/SIGHUP handlers call kill() on any survivors so graceful-exit paths also clean up.\" The `_inflight_children` set + `_inflight_lock` (core.py:18-19) and `_kill_inflight_children` (core.py:26-42) are the mechanism.",
+   "Signal handlers must CHAIN, not clobber, and can only be installed from the main thread. core.py:60-79: \"Chain onto any previously installed signal handlers rather than clobbering them (e.g. FastMCP installs its own SIGTERM handler)\" \u2014 it captures `signal.getsignal(sig)`, wraps it, and re-invokes the old handler unless it is SIG_DFL/SIG_IGN. The whole loop is inside `except (ValueError, OSError): pass` with the comment core.py:78: \"Not on the main thread or signal not available \u2014 skip silently.\" A kernel that installs handlers naively will break FastMCP's shutdown.",
+   "Orphan watcher \u2014 modelcontextprotocol/python-sdk#526. __main__.py:11-19: \"When the MCP client (e.g. Claude) exits without closing stdin cleanly, the FastMCP server can keep running orphaned in the background. The orphaned server keeps polling Mail.app via Apple Events, which causes Mail to relaunch after the user quits it. Capture the initial PPID at startup and self-terminate when it changes (parent died, we have been reparented). Uses os._exit because sys.exit does not tear down FastMCP's background asyncio loop reliably.\" This is a user-visible symptom (Mail resurrecting itself) with a non-obvious cause \u2014 it belongs in the kernel's lifecycle layer, not per-server.",
+   "Localized inbox names \u2014 Mail.app names the inbox by system locale for non-IMAP accounts. core.py:337-351: \"Mail.app uses the system locale to name the inbox folder for non-IMAP accounts (Exchange, on-my-Mac), so we must try multiple names to find it. IMAP accounts (iCloud, Gmail) typically expose 'INBOX' regardless of system language.\" INBOX_NAMES has 11 entries (INBOX, Inbox, Bo\u00eete de r\u00e9ception, Bo\u00eete aux lettres, R\u00e9ception, Posteingang, Bandeja de entrada, Posta in arrivo, Caixa de entrada, Postvak IN, \u53d7\u4fe1\u30c8\u30ec\u30a4). Same list is re-applied in build_mailbox_ref (core.py:474-485) when the caller asks for \"INBOX\". constants.py:14-30 SKIP_FOLDERS carries the parallel localized list for Trash/Junk/Sent/Drafts in FR/DE/ES.",
+   "`flag index` and `flagged status` are INDEPENDENT properties in Mail \u2014 unflagging clears the boolean but leaves a residual index. core.py:435-437: \"`flag index` and `flagged status` are independent properties in Mail \u2014 unflagging only clears the boolean, leaving a residual index \u2014 so the read is gated on `flagged status` to treat such messages as unflagged.\" Consequences encoded in three places: search.py:243-246 \"flag index survives unflagging; require the active-flag boolean so residual indexes on unflagged messages don't match\"; manage.py:657-658 \"flag index and flagged status are independent properties; set both so coloring an unflagged message activates the flag\"; manage.py:771-773 the re-color match condition `(flag index is not N or flagged status is false)`. constants.py:32-34 adds: \"Mail only scripts the seven indexed colors; custom flag names assigned in the UI are not accessible via AppleScript.\"",
+   "`synchronize with` vs `check for new mail` \u2014 receive-only vs bidirectional, and the -1712 fire-and-forget contract. manage.py:1338-1356: \"Uses the `synchronize with <account>` AppleScript verb ... rather than `check for new mail`. The latter is receive-only \u2014 it pulls new messages but does NOT push pending IMAP commands like queued moves / archives / flag changes. With `check for new mail`, archives done via `move_email` could sit in Mail.app's local cache for several minutes before reaching the IMAP server, leaving iPhone Mail (which reads IMAP directly) showing already-archived messages still in INBOX.\" And manage.py:1351-1355 + 1364-1367: \"We wrap each invocation in `with timeout of N seconds` so the AppleScript returns promptly. When the timeout fires (error -1712) Mail.app keeps the sync running in the background \u2014 exactly the fire-and-forget semantics callers expect.\" PER_ACCOUNT_TIMEOUT_S = 8. This is the only OSStatus code the server treats as non-fatal.",
+   "HTML on the pasteboard must be converted to RTF, not written as `NSPasteboardTypeHTML` \u2014 otherwise Mail pastes the body TWICE. compose.py:163-181: \"writing the HTML *source* under NSPasteboardTypeHTML (the previous approach) leaves Mail's compose editor with only an ambiguous public.html flavor and no plain-text representation. For anything other than a complete, well-formed HTML document Mail renders a best-effort version AND surfaces the literal markup, so the recipient sees the message twice \u2014 once rendered, once as raw <p>/<b> source. Converting the HTML to an NSAttributedString and writing it back as RTF gives Mail a single, unambiguous rich-text flavor.\" There is also an explicit fallback when the conversion returns nil (compose.py:203-205): \"Conversion failed (malformed HTML): fall back to pasting the raw string as plain text so the body is never silently empty.\"",
+   "The Cocoa HTML reader defaults to Latin-1 and mojibakes all UTF-8 \u2014 pin NSCharacterEncodingDocumentAttribute. compose.py:188-191: \"Pin the HTML importer to UTF-8. Without NSCharacterEncodingDocumentAttribute the Cocoa HTML reader auto-detects the charset and defaults to Latin-1/Windows-1252, so the UTF-8 bytes for \u00e4/\u00f6/\u00fc/\u00df/emoji get double-decoded into mojibake (e.g. \\\"Gr\u00fc\u00dfe\\\" -> \\\"Gr\u00c3\u00bc\u00c3\u0178e\\\"). Passing NSUTF8StringEncoding fixes all multibyte text.\"",
+   "You CANNOT verify a clipboard paste by reading back `content of replyMessage` \u2014 Mail's GUI editor buffer is decoupled from the scriptable property. compose.py:878-891: \"The body is inserted via a blind Cmd+V into the compose window, so the window MUST have keyboard focus when the keystroke fires. If Mail is not frontmost at that moment (common on the first compose of a session, when another app holds focus, or when the machine is busy), the paste lands nowhere and an EMPTY reply is sent with no error returned. We deliberately do NOT verify the paste by reading `content of replyMessage` afterwards: Mail's GUI editor buffer is decoupled from the scriptable `content` property, so reading it always returns the pre-paste value (verified empirically \u2014 it reports 0 chars even after a successful paste). A content-read-back guard would therefore false-fail every send.\" The fix is a focus poll, not a fixed delay \u2014 compose.py:506-508: \"Poll until Mail is genuinely frontmost before driving the keyboard. A single `set frontmost` + fixed delay can fire the tab/paste keystrokes before the compose window has focus, producing a silent empty send.\" Loop bound is 40 iterations x 0.1 s (compose.py:509-515, 897-903).",
+   "Attachments must be added AFTER the HTML paste, because Cmd+A in the body would select and replace them. compose.py:501-503: \"The Cmd+A here selects the entire body (which is why we can't have the attachment placed yet \u2014 it would be selected and replaced by the paste).\" See also compose.py:460-462 and the Step-4b marker at compose.py:534. Related: compose.py:518-520 \"Tab through: To -> Cc -> Bcc -> Subject -> Body / 7 tabs covers all combinations of visible/hidden CC/BCC fields.\"",
+   "`make new attachment ... at after the last paragraph` must be scoped inside `tell replyMessage`. compose.py:871-873: \"Add attachments (must be scoped to replyMessage so `last paragraph` resolves; bare `make new attachment ... at after the last paragraph` inside `tell application \\\"Mail\\\"` raises \\\"Can't get last paragraph\\\" because the reference has no implicit owner).\"",
+   "LLM callers wrap email bodies in CDATA and it leaks into the sent message. compose.py:136-148 `_strip_cdata_wrappers`: \"LLM callers occasionally wrap email bodies in `<![CDATA[...]]>`. HTML parsers treat the opening `<![CDATA[` as a bogus comment that ends at the first `>` in the actual content, so it's invisible \u2014 but the trailing `]]>` has no preceding `<` and renders as literal text at the end of the message. Strip both forms so callers don't have to know.\" Applied on every body/reply/forward/draft input.",
+   "Mail's GLOBAL 'Send new messages from' preference silently overrides the account you asked to send from. compose.py:68-86 `_compose_sender_script`: \"With `sender_override` the value is applied unconditionally. Without an override, Mail's global composing preference may otherwise win over the caller's account choice, so the sender is pinned to the account's only alias when the account has a single address, and left untouched for multi-alias accounts so the user's Mail preference stays in effect.\" `_validate_from_address` (compose.py:89-130) matches the requested address case-insensitively against the account's real aliases and returns Mail's own casing.",
+   "`content of aMessage` is Mail's RENDERED display text \u2014 hyperlinks become U+FFFC and MIME structure is gone. Use `source` instead. raw_source.py:1-17 (module docstring): \"The other body-extraction paths in this MCP go through `content of aMessage` \u2014 Mail.app's rendered (display-text) representation. That path collapses HTML to plain text and replaces embedded objects (including hyperlinks) with U+FFFC, so hrefs and MIME structure don't survive. This tool exposes the parallel `source of aMessage` property instead. Same property that produces the `.partial.emlx` file content on disk.\" Also raw_source.py:107-110: \"`message id` property \u2014 distinct from `id`, which is Mail.app's internal numeric id.\"",
+   "Apple Mail `message://` deep links have an exact required shape. search.py:92-95: \"Apple Mail requires: message:// scheme, angle brackets (percent-encoded), and raw @ in the Message-ID. Normalize ID in case angle brackets are present or missing (AppleScript returns both forms).\" Implementation: `f\"message://%3C{quote(msg_id, safe='@')}%3E\"` after `internet_message_id.strip(\"<>\")`. Duplicated at inbox.py:42-43 and re-implemented in AppleScript at inbox.py:129-132.",
+   "Stored XSS through email subjects in the dashboard UI. ui/dashboard.py:16-24: \"json.dumps does not escape '<', '>', '&' or the JS line separators U+2028/U+2029. Inside a <script> element, a value containing \\\"</script>\\\" (e.g. an attacker-controlled email subject or sender) would close the script element early and inject arbitrary HTML -- a stored XSS. Escaping these as \\\\uXXXX keeps the output valid JSON that parses to the identical value, but it can no longer break out of the script context.\" The same U+2028/U+2029 hazard is handled independently in core.py:153-155 escape_applescript: \"Unicode line/paragraph separators can break AppleScript string parsing.\"",
+   "Mail strips trailing <br> tags, so a visible gap before quoted text needs <div><br></div>. compose.py:707-709: \"Append an empty paragraph to create a visible gap before the quoted original. Mail strips trailing <br> tags, so we use a <p> with &nbsp; instead.\" (Code uses `gap_html = \"<div><br></div><div><br></div>\"`.) Related: setting `content` via AppleScript destroys thread history \u2014 compose.py:789-791: \"This preserves Mail.app's native quoted original in the HTML layer. (setting `content` via AppleScript overwrites the HTML layer entirely, destroying the email thread history.)\"",
+   "Optional packaging artifacts must not hard-fail the version drift guard. scripts/check_versions.py:23-31: \"Optional: this repo does not ship the .mcpb packaging folder, and a check that hard-fails on an absent optional artifact is a permanently red test rather than a signal. When the folder is present its version must still agree with everything else.\" Same reasoning for server.json at check_versions.py:41-43. This exact bug (a permanently failing apple-mail suite) was fixed in HEAD commit 9d2e9ac \u2014 a CI-matrix kernel must not reintroduce it.",
+   "Bodies and HTML are written to temp files and read back with `do shell script \"cat ...\"` rather than interpolated into the script. compose.py:690-692: \"Write reply body to a temp file to avoid AppleScript string escaping issues with special characters (em dashes, curly quotes, colons, etc.)\" and compose.py:447-448: \"Write HTML to temp file so the AppleScript can read it without worrying about escaping quotes/special chars in the HTML string.\" Cleanup is belt-and-suspenders: inside the AppleScript (`do shell script \"rm -f ...\"`), in the AppleScript's `on error` branch, and again in Python's `finally` (compose.py:976-981, 1418-1420).",
+   "AppleScript's `whose` clause cannot filter on message body, so body search falls back to per-message iteration \u2014 and that fallback needs a lowercase handler that shells out. search.py:226 \"When body_text is provided, we must iterate per-message (can't use whose clause)\" and search.py:598-599 \"WARNING: body search is significantly slower as it reads each message body.\" The case-insensitive compare is done by core.py:327-332 LOWERCASE_HANDLER, which runs `do shell script \"echo ... | tr '[:upper:]' '[:lower:]'\"` PER FIELD PER MESSAGE \u2014 three shell-outs per message in the body-search path (subject, sender, content). That is a large hidden cost the kernel should know about before it standardizes on a timeout."
+  ],
+  "migrationRisk": "high",
+  "migrationRiskReason": "The core executor (core.py run_applescript, 572 lines) is the cleanest lift in the repo and is already what the kernel wants \u2014 it is the only Python server that independently reinvented apple-notes' \"inner AppleScript timeout shorter than the outer process timeout\" trick, plus an in-flight child registry with chained signal handlers. But three things make a naive swap dangerous. (1) The `_apply_applescript_timeout` carve-outs are not cosmetic: wrapping a script that defines handlers raises -2741 (issue #63) and wrapping a `use framework` ASObjC script fails outright, so a kernel that unconditionally wraps will break search.py, smart_inbox.py and all of compose.py at runtime \u2014 and these are exactly the paths with no unit coverage of the generated script's *validity*. (2) compose.py has a completely separate, undeclared executor: three direct `subprocess.run(['osascript','-'], timeout=30)` calls (lines 557, 964, 1404) plus an untimed `subprocess.run(['open','-a','Mail', ...], check=True)` at line 356. These drive Mail's GUI via System Events keystrokes with hand-tuned `delay` values and a 40x0.1 s frontmost poll; they are not tracked in `_inflight_children`, and moving them onto the kernel changes their timing semantics. (3) Any generic retry-on-error in the kernel is actively unsafe here \u2014 compose_email/reply_to_email/forward_email/redirect_email end in `send`, and a retry after an ambiguous timeout sends the email twice. Separately, the error layer is a greenfield rewrite rather than a migration: apple-mail has ZERO permission classification (it recognizes exactly one OSStatus code, -1712, and only inside synchronize_account), so \"Operation not permitted\", \"-1743\" and \"Permission denied\" all reach the user verbatim as `Error executing tool X: AppleScript error: <raw stderr>` with no remedy. There is also no doctor tool to extend \u2014 one must be written from scratch."
+ },
+ {
+  "server": "apple-messages",
+  "language": "python",
+  "usesAppleScript": true,
+  "primaryBackend": "mixed \u2014 direct read-only SQLite against ~/Library/Messages/chat.db and ~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb for ALL reads; osascript (AppleScript) only for the send path; one legacy `sqlite3` CLI subprocess fallback for contacts",
+  "executor": {
+   "files": [
+    "apple-messages/mac_messages_mcp/messages.py"
+   ],
+   "mechanism": "subprocess.Popen([\"osascript\",\"-e\",script], stdout=PIPE, stderr=PIPE) + communicate(timeout=...) \u2014 `run_applescript` at messages.py:32-45. SECOND, undocumented executor: subprocess.run(cmd, shell=True, capture_output=True, text=True) in `get_addressbook_contacts_subprocess` at messages.py:560-626 (invokes the `sqlite3` CLI via a shell heredoc).",
+   "hasTimeout": true,
+   "timeoutDefaultMs": 30000,
+   "timeoutIsConfigurable": true,
+   "killsChildOnTimeout": true,
+   "releasesAppEventQueue": false,
+   "hasRetry": false,
+   "retryStrategy": "None in the executor. Caller-level only: (1) `_send_message_to_recipient` (messages.py:967-969) falls back once to `_send_message_direct` on any \"Error:\" prefix \u2014 a different AppleScript, not a re-run; (2) `_verify_send_in_db` (messages.py:878-891) polls chat.db every 0.5s for 6s; (3) `query_addressbook_db` (messages.py:385-398) iterates candidate .abcddb paths, continuing past sqlite3.OperationalError. NOTE: the second executor (messages.py:587) has NO timeout and NO cap at all.",
+   "hasOutputCap": false,
+   "totalLines": 14
+  },
+  "errorHandling": {
+   "files": [
+    "apple-messages/mac_messages_mcp/messages.py",
+    "apple-messages/mac_messages_mcp/server.py"
+   ],
+   "classifiesPermissionErrors": true,
+   "recognizedStrings": [
+    "(NO regexes and NO string matching on OS error text exist anywhere in this server \u2014 there is no errorHandling module)",
+    "Python exception-type matching only: `except sqlite3.OperationalError` (messages.py:186, 394, 837, 2002, 2008)",
+    "`except PermissionError` (messages.py:1808, 1961) \u2014 catches BOTH EACCES and EPERM because CPython maps both errnos to PermissionError",
+    "`except OSError` (messages.py:987, 2109) \u2014 cleanup/getsize only, not classified",
+    "Result-shape sentinel, not error text: `\"error\" in results[0]` (~20 call sites)",
+    "`result.startswith(\"Error:\")` \u2014 messages.py:967 (capital E; matches run_applescript transport errors)",
+    "`result.startswith(\"error:\")` \u2014 messages.py:1642, 1707, 1770 (lowercase; matches only the in-AppleScript `on error` convention)",
+    "`result.strip() == \"success\"` / `\"success:iMessage\"` / `\"success:SMS\"` \u2014 messages.py:1644, 1709, 1772-1783"
+   ],
+   "recognizesEperm": true,
+   "recognizesEacces": true,
+   "recognizesAutomation1743": false,
+   "remedyQuality": "names-pane-and-exact-steps",
+   "swallowsDetailInProduction": false
+  },
+  "diagnostics": {
+   "hasDoctor": false,
+   "toolNames": [
+    "tool_check_db_access",
+    "tool_check_addressbook",
+    "tool_check_contacts",
+    "tool_check_imessage_availability"
+   ],
+   "checksPerformed": [
+    "tool_check_db_access (messages.py:1790-1842): chat.db path exists; file opens and 1 byte reads (PermissionError -> FDA remedy); read-only sqlite connect; COUNT(*) FROM sqlite_master; presence of tables message/handle/chat",
+    "tool_check_addressbook (messages.py:1929-2026): AddressBook Sources dir exists; glob for */AddressBook-v22.abcddb; per-file 1-byte read; per-file sqlite connect; presence of ZABCDRECORD/ZABCDPHONENUMBER; COUNT(*) FROM ZABCDRECORD; then calls get_addressbook_contacts() and reports how many loaded",
+    "tool_check_contacts (server.py:212-245): reports cached contact count + first 10 entries",
+    "tool_check_imessage_availability (messages.py:1549-1602): purely a chat.db handle/service query \u2014 despite the name it never touches Messages.app or AppleScript",
+    "NOTE: none of these are named 'doctor' or 'health-check', and there is no aggregate diagnostic tool"
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "Automation / Apple Events permission for Messages.app. NOTHING in this server runs osascript as a diagnostic. The entire send path (the only AppleScript surface) has zero diagnostic coverage, so -1743 is undiscoverable until a send silently fails.",
+    "Distinguishing EPERM (TCC folder-service denial) from EACCES (real POSIX mode denial) from ENOENT. Both PermissionError variants produce the identical 'Permission denied ... grant Full Disk Access' string, and stat/glob denials are reported as 'not found'.",
+    "Whether the server's own working directory sits in a TCC-protected folder (~/Documents, ~/Desktop, ~/Downloads, iCloud Drive) \u2014 the exact fault that killed all 7 servers.",
+    "Presence/executability of the `osascript` binary and of `sqlite3` (the contacts fallback shells out to it blind).",
+    "Whether Messages.app is installed, running, and signed in, and whether any SMS-capable service is enabled (Text Message Forwarding). tool_check_imessage_availability infers this from historical chat.db rows, not live service state.",
+    "pillow-heif / libheif availability \u2014 get_attachment (messages.py:2437-2444) degrades silently to a path-only response with no diagnostic surface.",
+    "macOS version and chat.db schema variant. `_from_apple_ns` (messages.py:2063-2071) carries a seconds-vs-nanoseconds heuristic that no diagnostic ever validates.",
+    "Structured/machine-readable output. All four tools return free-form English prose: no status enum, no server version, no remedy code, nothing parseable.",
+    "Freshness of the remedy text: it points at 'System Preferences > Security & Privacy > Privacy > Full Disk Access' (messages.py:189), a pane that has not existed since macOS 13. The README uses the correct modern path; the code does not."
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "tool_get_recent_messages \u2014 hard-coded `ORDER BY m.date DESC LIMIT 100` in SQL (messages.py:1266), no caller override; each body additionally capped at 4,000 chars by _sanitize_message_body (messages.py:249, 268-281). Worst case ~400 KB.",
+    "tool_fuzzy_search_messages \u2014 TWO independent caps, both applied unconditionally: scan cap _FUZZY_SEARCH_SOFT_CAP=10_000 bound into SQL LIMIT (messages.py:1341, 1414), and render cap _FUZZY_SEARCH_RESULT_LIMIT=50 with an explicit absent/invalid-param default at messages.py:1489 (`effective_limit = limit if limit and limit > 0 else _FUZZY_SEARCH_RESULT_LIMIT`). Both truncations disclosed (messages.py:1533-1545).",
+    "tool_search_attachments \u2014 limit default 50 in the signature (messages.py:2207), rejects limit<=0, fetches limit*3 then slices to limit (messages.py:2295-2302).",
+    "tool_get_chats \u2014 response bounded: `limit = max(1, min(500, int(limit)))` clamp at server.py:310, slice at server.py:369, truncation disclosed server.py:377-381.",
+    "tool_get_attachment \u2014 max_bytes default 5_000_000 (messages.py:2051, 2358); oversize images return path-only with disclosure (messages.py:2426-2432).",
+    "tool_find_contact \u2014 slices to top 10 with '...and N more' disclosure (server.py:179-185).",
+    "tool_check_contacts \u2014 samples first 10 (server.py:230).",
+    "tool_check_imessage_availability \u2014 single-line response.",
+    "tool_send_message \u2014 single-line response.",
+    "tool_check_db_access \u2014 fixed-length status list."
+   ],
+   "unboundedTools": [
+    "tool_check_addressbook \u2014 VERIFIED by reading messages.py:1929-2026: the status list grows per discovered .abcddb file with no cap, and it terminates by calling get_addressbook_contacts(), which loads EVERY contact into memory. Latent rather than active (few source DBs in practice), but there is no cap in the code.",
+    "INTERNAL (does not reach the user, but unbounded and worth kernel attention): get_chat_mapping does `SELECT room_name, display_name FROM chat` with no LIMIT (messages.py:81) and runs on every message-listing request; tool_get_chats' SQL (server.py:316-326) has NO LIMIT \u2014 it materialises every chat plus a GROUP_CONCAT of every participant handle in Python before slicing to `limit`."
+   ],
+   "capAndDiscloseHelper": "hand-rolled per tool \u2014 no shared helper exists. Three different truncation idioms coexist: SQL LIMIT + module constant (fuzzy search), Python slice + clamp (get_chats, find_contact), signature default (search_attachments). Disclosure strings are written longhand at four separate sites: messages.py:1533-1545, server.py:184, server.py:377-381, messages.py:2426-2432."
+  },
+  "tests": {
+   "framework": "pytest (mixed styles: unittest.TestCase classes in test_messages.py, bare pytest functions elsewhere)",
+   "command": "cd apple-messages && uv run --with pytest python -m pytest -q   # pytest is NOT installed in the checked-in .venv and dev extras are not installed; `.venv/bin/python -m pytest` fails with 'No module named pytest'",
+   "count": 133,
+   "passing": true,
+   "requiresTccGrants": false
+  },
+  "framing": {
+   "usesRecordSeparators": false,
+   "fieldSep": ":",
+   "recordSep": "none \u2014 osascript stdout is decoded UTF-8 and .strip()ed whole (messages.py:45); no multi-value returns",
+   "parserLocation": "inline at every call site, no shared parser: messages.py:967 (_send_message_to_recipient), messages.py:1642-1650 (_send_message_sms), messages.py:1706-1713 (group branch of _send_message_direct), messages.py:1770-1785 (individual branch of _send_message_direct)",
+   "notes": "Framing is an ad-hoc string-prefix convention with a CONFIRMED case-sensitivity collision. The AppleScript bodies emit lowercase `\"error:\" & errMsg` from their own `on error` handlers, but the executor emits capital `\"Error: \" + stderr` for transport/OS-level failures (messages.py:44). Three of the four parse sites test only the lowercase prefix, so every osascript-level failure \u2014 including TCC Automation denial \u2014 falls through to the generic else branch. Verified live by injecting a real -1743 string: _send_message_direct returns 'Unknown result: Error: ... (-1743)', _send_message_sms returns 'Unknown SMS result: ...', the group branch returns 'Unknown group message result: ...'. This is exactly the 'generic failure, real cause invisible' pathology the kernel exists to eliminate. The kernel MUST return a typed result object, never a prefixed string."
+  },
+  "hardWonKnowledge": [
+   "AppleScript `send` LIES ABOUT SUCCESS \u2014 the highest-value insight in this server. messages.py:816-839: \"The AppleScript `send` command returns without error even when the message later fails (e.g. error 22 for an unroutable handle, or a recipient who deregistered from iMessage), so the AppleScript result alone cannot confirm a send. The authoritative outcome lives in chat.db's message.error / message.is_sent columns, which are populated within a second or two of the attempt.\" This server therefore polls chat.db after every send (_verify_send_in_db, messages.py:810-891) and refuses to claim success it cannot verify (_report_send_outcome, messages.py:894-921). No other server has this write-then-verify pattern; the kernel needs a generic 'confirm the side effect out-of-band' hook or servers keep reporting phantom successes.",
+   "Timestamp correlation is NOT a sufficient key for verifying your own write. messages.py:829-836: \"`sent_after_unix` alone is not a reliable correlation key: two sends to the same handle close together (e.g. rapid-fire tool calls) can both be 'the latest row after time X' from either call's point of view, so a plain `ORDER BY date DESC LIMIT 1` can report the outcome of the wrong message.\" Fix: additionally match on exact body text, decoding attributedBody when `text` is NULL, with a documented fall-back to newest-row so attachment-only sends don't produce false negatives (messages.py:863-874). This is an agent-specific bug \u2014 humans don't fire two sends in the same second.",
+   "Error-channel collision between the DB layer's failure dict and a real data column. messages.py:845-847: \"m.error is aliased to send_error so a real row can't be mistaken for query_messages_db's {\\\"error\\\": ...} failure dict.\" The whole DB layer signals failure by returning `[{\"error\": ...}]` and callers test `\"error\" in results[0]`, so any query selecting a column literally named `error` reports every successful row as a failure. The kernel must NOT adopt in-band `{\"error\": ...}` result dicts, or it re-imports this bug class into all 7 servers.",
+   "`chat id \"\u2026\"` vs `chat \"\u2026\"` \u2014 documented twice because it was clearly paid for twice. messages.py:955-958: \"Group chats are addressed by their full chat id (e.g. \\\"iMessage;+;chat123\u2026\\\"). The Messages dictionary requires `chat id \\\"\u2026\\\"`, NOT `chat \\\"\u2026\\\"`: the latter looks up by the chat's display name and fails for guid-style identifiers (raises -1728 \\\"Can't get chat \u2026\\\").\" Repeated verbatim at messages.py:1685-1687.",
+   "SQLite integer overflow on Apple nanosecond timestamps \u2014 worked around by binding the timestamp as a STRING and casting the column. messages.py:1235-1236 and 1251: \"String-bind the Apple-ns timestamp to avoid SQLite integer overflow\" -> `WHERE CAST(m.date AS TEXT) > ?`. Same trick at messages.py:1407-1411. test_integration.py asserts 'Python int too large' never appears in output. CAVEAT the kernel must inherit knowingly: this silently makes the comparison LEXICOGRAPHIC, not numeric \u2014 it works only because current Apple-ns values all share a digit count.",
+   "chat.db stores TWO incompatible date encodings and you must sniff by digit count. messages.py:2063-2071: \"Older chat.db rows store seconds-since-2001 (10 or fewer digits in the integer); newer macOS versions store nanoseconds (more than 10 digits). Both are handled here so callers don't repeat the heuristic.\" Implemented as `seconds = ts / 1_000_000_000 if len(str(ts)) > 10 else ts`.",
+   "attributedBody typedstream reverse-engineering \u2014 pure archaeology, unrecoverable if dropped. messages.py:92-107 documents the exact NSArchiver layout (\"the string content is stored after the first `NSString` class marker followed by a 5-byte header (\\\\x01 <byte> \\\\x84 \\\\x01 +) and a variable-length integer encoding the byte length of the UTF-8 text\") plus the full varint table (<0x80 inline, 0x81=2-byte LE, 0x82=3-byte, 0x83=4-byte) implemented at messages.py:128-155. Modern macOS leaves message.text NULL for a large fraction of rows, so without this decoder the server reads almost nothing.",
+   "AppleScript escaping ORDER is load-bearing, and Unicode line separators count as line terminators. messages.py:48-56: \"Escapes backslashes first (so subsequent escapes aren't double-escaped), then double quotes, then control characters... Also handles Unicode line/paragraph separators (U+2028 / U+2029), which AppleScript treats as line terminators.\" Dedicated regression test at tests/test_integration.py:test_applescript_escape_order whose comment spells out the injection: \"Wrong order (quotes first, then backslashes) turns \\\\\\\" into \\\\\\\\\\\" which leaves the quote unescaped.\"",
+   "Message bodies are written to a TEMP FILE and read back inside AppleScript rather than interpolated. messages.py:943-959 uses `send (read (POSIX file \"\u2026\") as \u00abclass utf8\u00bb)`, with the temp file removed in a `finally` (messages.py:982-988). This sidesteps AppleScript string-literal length limits and encoding loss entirely \u2014 the escaping path (_send_message_direct) is only the FALLBACK. The kernel's 'run a script with a large/arbitrary payload' primitive should offer this file-handoff mode.",
+   "chat.db's own `total_bytes` column cannot be trusted. messages.py:2099-2103: \"chat.db's `total_bytes` is unreliable \u2014 many rows store a stale or rounded value (e.g. 1048576 for files that are actually 8MB). When the file is on disk we trust `os.path.getsize` instead.\"",
+   "Defensive row-shape guard justified for BOTH a test reason and a production reason. messages.py:2187-2192: \"Drop rows that don't look like attachment-join rows. Two reasons to keep this guard: (1) in tests where a single query_messages_db mock serves multiple queries, foreign rows would crash _shape_attachment; (2) in production, a future schema change that adds an extra column or strips one would degrade gracefully rather than break the tool.\"",
+   "Scan cap and result cap are DIFFERENT problems and both are needed. messages.py:1349-1354: \"The scan cap above bounds how many rows are *examined*; this bounds how many are *returned*. They are different problems: a loose term over a 30-day window can match thousands of rows well under the scan cap, and formatting every one of them produces a reply far larger than the conversation it was meant to inform. Matches are sorted by score before this applies, so the truncation keeps the best hits.\" The kernel's cap-and-disclose helper must expose BOTH knobs and must cap AFTER ranking.",
+   "iMessage app-extension 'balloon' payloads must be filtered or they pollute every attachment listing. messages.py:2033-2036: \"UTI prefix that flags the iMessage app extension 'balloon' payload format. These are container blobs (Apple Pay, polls, link previews, etc.) \u2014 not user-visible files, and parsing them is out of scope.\" Filter also drops stickers and `*.pluginPayloadAttachment` (messages.py:2081-2094).",
+   "Anti-retry-storm prompt directive injected into every permission error \u2014 17 occurrences in messages.py (lines 189, 379, 402, 623, 1798, 1809, 1811, 1838, 1842, 1940, 1948, 1963, 1968, 2004, 2010, 2021, 2026): \"PLEASE TELL THE USER TO GRANT FULL DISK ACCESS TO THE TERMINAL APPLICATION(CURSOR, TERMINAL, CLAUDE, ETC.) AND RESTART THE APPLICATION. DO NOT RETRY UNTIL NEXT MESSAGE.\" A hard-won behavioural workaround: without a terminal directive the agent retries the denied call in a loop because TCC failures look transient. The kernel's TCC taxonomy should carry a machine-readable `retryable: false` flag so this need not be shouted in prose 17 times.",
+   "SQLite is opened strictly read-only via URI + PRAGMA, defence-in-depth. messages.py:24-29: `f\"{Path(path).expanduser().resolve().as_uri()}?mode=ro\"` plus `PRAGMA query_only = ON`, with a regression test (tests/test_messages.py:test_readonly_connection_rejects_writes) proving INSERT raises. Prevents the server from ever corrupting or WAL-checkpointing the user's live chat.db.",
+   "`USE_TEST_DATA=true` env escape hatch that short-circuits contact loading \u2014 messages.py:456-463, commented \"For testing/fallback, parse the user-provided examples in cases where direct DB access fails. This is a temporary workaround until full disk access is granted.\" The ONLY env var in the server. It returns a single hardcoded TEST/+11111111111 record, so it is a stub, not a fixture \u2014 carry it forward only deliberately.",
+   "Unnamed group chats must be included by default or they become unreachable. server.py:300-305: unnamed chats are \"labelled by their participants ... because study-group and project threads are usually never given a name \u2014 filtering them out left them impossible to find or message.\" A UX regression that was found and fixed.",
+   "LIKE-prefilter cannot see attributedBody, so the SQL must deliberately over-fetch. messages.py:1392-1399: \"use a LIKE pre-filter on the text column to let SQLite do the heavy lifting for exact substring matches. Messages stored only in attributedBody (binary blob) cannot be LIKE-searched, so we also fetch those and filter in Python.\" Implemented as `(m.text LIKE ? ESCAPE '\\\\' OR (m.text IS NULL AND m.attributedBody IS NOT NULL))`, with _escape_like (messages.py:1344-1346) neutralising %/_ so a user searching for '50%' doesn't match everything."
+  ],
+  "migrationRisk": "medium",
+  "migrationRiskReason": "The AppleScript executor itself is trivially replaceable \u2014 run_applescript is 14 lines (messages.py:32-45) with a single behaviour worth preserving (kill-then-reap on TimeoutExpired) and is already fully mocked in tests, so swapping it for a kernel call is mechanical. The risk lives elsewhere. (1) THE STRING-PREFIX CONTRACT IS LOAD-BEARING AND ALREADY BROKEN: the executor returns 'Error: <stderr>' (capital) while AppleScript bodies return 'error:<msg>' (lowercase), and three of four parse sites (messages.py:1642, 1707, 1770) test only lowercase. I injected a real '-1743 Not authorized to send Apple events to Messages' and confirmed all three return 'Unknown result: \u2026' / 'Unknown SMS result: \u2026' / 'Unknown group message result: \u2026'. Migration must replace this with a typed result, and all four call sites have to move together or sends start silently misreporting. (2) THIS SERVER IS ~90% SQLITE, NOT APPLESCRIPT \u2014 a kernel designed around osascript covers only the send path here; the TCC taxonomy must classify sqlite3.OperationalError('unable to open database file') and PermissionError(errno=1) as first-class TCC signals, not just Apple Event errors. (3) SILENT-FALSE FAULTS: os.path.exists() and glob.glob() both return falsey on EPERM, so TCC denials are currently diagnosed as 'Messages database not found' / 'No AddressBook database files found'. Verified live on this machine (which lacks FDA): check_addressbook_access() returns 'ERROR: No AddressBook database files found in \u2026' even though the directory exists and is populated. The kernel must probe with an operation that RAISES, never with exists()/glob(). (4) A SECOND, UNGOVERNED EXECUTOR at messages.py:560-626 \u2014 subprocess.run(shell=True, capture_output=True) with NO timeout and NO output cap, reached automatically from messages.py:471 exactly when DB access is denied, i.e. the TCC failure path routes straight into an unbounded, untimeouted shell. Its heredoc terminator is indented (so `<<EOF` never closes at column 0) and its glob can pass multiple files to sqlite3, so I believe it is dead-on-arrival in practice \u2014 I did NOT execute it to confirm, so treat that as unverified. It must not be ported forward as-is. (5) The 17 copies of the 'DO NOT RETRY UNTIL NEXT MESSAGE' directive are string-asserted by tests; centralising them requires touching tests/test_db_access_errors.py and tests/test_messages.py. (6) TEST-SUITE HAZARD found while running it: tests/test_integration.py:test_sms_fallback_functionality calls _send_message_sms('+15551234567', 'test message') for real, with no mock. Automation for Messages IS granted from this terminal (I confirmed osascript reaches Messages.app), so on a Mac with Text Message Forwarding enabled this suite sends a live SMS to +15551234567 on every run. test_no_crashes and test_time_ranges likewise hit the real chat.db. The suite passes without any TCC grant only because those tests assert nothing stronger than isinstance(result, str)."
+ },
+ {
+  "server": "apple-events",
+  "language": "typescript",
+  "usesAppleScript": false,
+  "primaryBackend": "cli-binary \u2014 a locally compiled Swift EventKit binary (apple-events/bin/EventKitCLI) invoked via execFile with a JSON-on-stdout protocol. No osascript/JXA in src/. The only osascript in the repo is apple-events/check-permissions.sh:33, a dev helper the server never calls.",
+  "executor": {
+   "files": [
+    "apple-events/src/utils/cliExecutor.ts",
+    "apple-events/src/utils/binaryValidator.ts",
+    "apple-events/src/utils/projectUtils.ts",
+    "apple-events/src/swift/EventKitCLI.swift",
+    "apple-events/scripts/build-swift.mjs"
+   ],
+   "mechanism": "node:child_process execFile hand-wrapped in a Promise (cliExecutor.ts:32-55). Exactly one runtime execution site: execFilePromise, called by runCli (line 144), called by executeCli (lines 207, 252). scripts/build-swift.mjs uses promisify(exec) but is build-time only.",
+   "hasTimeout": false,
+   "timeoutDefaultMs": 0,
+   "timeoutIsConfigurable": false,
+   "hasRetry": false,
+   "retryStrategy": "none \u2014 single execFile attempt, no backoff. The only fallback is a parse fallback: on non-zero exit the code re-parses stdout as JSON (cliExecutor.ts:154-160).",
+   "hasOutputCap": true,
+   "outputCapBytes": 10485760,
+   "killsChildOnTimeout": false,
+   "releasesAppEventQueue": false,
+   "totalLines": 253
+  },
+  "errorHandling": {
+   "files": [
+    "apple-events/src/utils/errorHandling.ts",
+    "apple-events/src/utils/cliExecutor.ts",
+    "apple-events/src/utils/binaryValidator.ts",
+    "apple-events/src/utils/projectUtils.ts",
+    "apple-events/src/swift/EventKitCLI.swift"
+   ],
+   "classifiesPermissionErrors": true,
+   "recognizedStrings": [
+    "/permission denied/i (errorHandling.ts:10)",
+    "/permission is write-only/i (errorHandling.ts:11)",
+    "/access denied/i (errorHandling.ts:12)",
+    "/not authorized.*(calendar|reminders)/i (errorHandling.ts:13)",
+    "/System Settings > Privacy & Security/i (errorHandling.ts:14)",
+    "/full calendar access/i (errorHandling.ts:15)",
+    "/full reminder access/i (errorHandling.ts:16)",
+    "/reminder permission denied/i (cliExecutor.ts:76)",
+    "/reminders access denied/i (cliExecutor.ts:77)",
+    "/not authorized.*reminders/i (cliExecutor.ts:78)",
+    "/reminder permission is write-only/i (cliExecutor.ts:79)",
+    "/calendar permission denied/i (cliExecutor.ts:82)",
+    "/calendar access denied/i (cliExecutor.ts:83)",
+    "/not authorized.*calendar/i (cliExecutor.ts:84)",
+    "/calendar permission is write-only/i (cliExecutor.ts:85)"
+   ],
+   "recognizesEperm": false,
+   "recognizesEacces": false,
+   "recognizesAutomation1743": false,
+   "remedyQuality": "names-pane-and-exact-steps",
+   "swallowsDetailInProduction": true
+  },
+  "diagnostics": {
+   "hasDoctor": false,
+   "toolNames": [],
+   "checksPerformed": [
+    "Nothing in-process. A case-insensitive grep for doctor/health/diagnostic across apple-events/src returns zero hits.",
+    "Out-of-band only: apple-events/check-permissions.sh (not registered as an MCP tool, not referenced by start.sh or bin/run.cjs) runs ./bin/EventKitCLI --action read --limit 1, then --action read-calendars, then an osascript probe of Reminders.",
+    "Swift-side pre-flight: EventKitCLI.swift:1573-1624 checks EKEventStore.authorizationStatus for .event/.reminder before every action and emits a targeted message per status (notDetermined / denied / restricted / writeOnly)."
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "Whether the repo path itself is readable \u2014 the actual failure from last week. See hardWonKnowledge for how EPERM under ~/Documents is silently converted into two misleading messages.",
+    "Whether bin/EventKitCLI exists, is executable, and is newer than src/swift/EventKitCLI.swift (start.sh:16-19 does this rebuild check, but nothing at runtime does).",
+    "Whether the Info.plist section is actually embedded in the built binary \u2014 without __TEXT,__info_plist macOS silently denies instead of prompting. Nothing verifies the built artifact; Info.plist.test.ts only asserts against the source plist file.",
+    "Whether SWIFT_BINARY_HASH is set and matches (binaryValidator.ts:252 reads it in production; a mismatch surfaces only as a generic FORBIDDEN/HASH error inside a not-found message).",
+    "TCC status readback surfaced to the user as data \u2014 the Swift layer knows the EKAuthorizationStatus but only ever emits it inside a fatal error string; there is no way to ask 'what is my current grant state' without triggering a failing operation.",
+    "Whether the Automation (Apple Events) grant exists \u2014 the shell script checks it, the server never does, and no code path recognizes error -1743.",
+    "Node/tsx runtime sanity \u2014 bin/run.cjs registers tsx and requires src/index.ts directly, so a broken tsx install surfaces as a raw require stack.",
+    "Whether e2e assertions actually exercised a granted store. src/e2e.test.ts calls the real tools but asserts only result.content is defined, so a permission-denied response passes identically to a success."
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "calendar_schedule action=free_slots \u2014 maxResults defaults to 50 via schemas.ts:878 and is applied in scheduling.ts:226/274/277 (slots.slice(0, maxResults)). Genuinely bounded.",
+    "calendar_schedule action=conflicts \u2014 input slots array capped at 100 (schemas.ts:892); output is proportional to input.",
+    "calendar_batch action=create/delete \u2014 input arrays capped at 200 (schemas.ts:911, 924); occurrences capped at 100 (line 934); class-schedule capped at 30 series with a 520-iteration loop guard (batchHandlers.ts:230).",
+    "calendar_batch action=study-blocks \u2014 findFreeSlots called with maxResults 200 (batchHandlers.ts:425) and blocks additionally capped by maxBlocksPerDay.",
+    "reminders_batch all actions \u2014 arrays capped at 200 (schemas.ts:1000-1040); output is one line per input item.",
+    "reminders_subtasks \u2014 subtasks are parsed out of a single reminder's notes field, itself capped at MAX_NOTE_LENGTH 2000 (constants.ts:26)."
+   ],
+   "unboundedTools": [
+    "reminders_tasks action=read \u2014 VERIFIED unbounded. EventKitCLI.swift:646 uses predicateForReminders(in: nil), i.e. every reminder in every list, always; all filtering is in-process. handleReadReminders (reminderHandlers.ts:456) then pipes the whole array into formatListMarkdown, which emits every item with no cap. No limit/maxResults parameter exists anywhere in the schema (ReadRemindersSchema) or the handler. The Swift 'read' action additionally always returns every list alongside the reminders (ReadResult, swift line ~1633).",
+    "calendar_events action=read (list form) \u2014 VERIFIED unbounded in count. resolveReadDateRange (calendarRepository.ts:53-88) supplies a 14-day default *window*, which bounds the time range but not the number of events inside it; formatListMarkdown emits all of them. No limit parameter exists.",
+    "calendar_events action=read with an id \u2014 VERIFIED worst case. findEventById (calendarRepository.ts:108-110) calls this.readEvents() with NO arguments, so startDate/endDate are undefined and EventKitCLI.swift:1019 builds predicateForEvents(withStart: Date.distantPast, end: Date.distantFuture) across every calendar. The entire calendar history and future is serialized to JSON, shipped over the 10MB pipe, and parsed \u2014 just to find one event by id.",
+    "calendar_schedule action=agenda \u2014 VERIFIED unbounded. Fetches every event in the window plus every dated reminder (scheduleHandlers.ts:81-102) and prints one line per entry with no cap; includeFreeGaps adds a further per-day line.",
+    "calendar_calendars action=read and reminders_lists action=read \u2014 unbounded in principle (all calendars / all lists, formatListMarkdown, no cap). Low practical risk since these collections are small, but there is no code-level bound.",
+    "calendar_schedule action=hops \u2014 one line per qualifying transition, plus a JSON payload block; bounded only by how many located consecutive events exist in the window."
+   ],
+   "capAndDiscloseHelper": "hand-rolled per tool \u2014 and mostly absent. The nearest thing is formatListMarkdown (apple-events/src/tools/handlers/shared.ts:111-128), which prints a `(Total: N)` header but then emits ALL N items. There is no truncation and no disclosure of truncation anywhere in this server. Note: commit 9d2e9ac ('Bound unbounded tool responses') added caps to apple-mail, apple-notes and apple-messages only \u2014 apple-events was not touched."
+  },
+  "framing": {
+   "usesRecordSeparators": false,
+   "recordSep": "n/a \u2014 one JSON document per process invocation, terminated by process exit",
+   "fieldSep": "n/a \u2014 JSON object fields",
+   "parserLocation": "apple-events/src/utils/cliExecutor.ts:119-140 (parseCliOutput). The Swift side always prints a single JSON envelope {status:'success',result:...} or {status:'error',message:...} to stdout (EventKitCLI.swift:9-17 StandardOutput/ErrorOutput).",
+   "notes": "The envelope discriminates success from error in-band on stdout, so exit code is not the source of truth. Two consequences the kernel must preserve: (1) errors are written to STDOUT, not stderr, and the process exits 1 (outputError, EventKitCLI.swift:1560-1567) \u2014 so on a non-zero exit the wrapper must still read stdout, which cliExecutor.ts:154-160 does deliberately; (2) empty stdout is treated as a distinct failure ('Empty CLI output', cliExecutor.ts:147), which is what a SIGKILL or a crash before the print looks like. Because there is no timeout, the third case \u2014 the child never prints and never exits \u2014 currently hangs forever rather than producing any of these."
+  },
+  "tests": {
+   "framework": "jest 30 + ts-jest ESM preset, custom env at apple-events/jest-env.cjs",
+   "command": "cd apple-events && NODE_NO_WARNINGS=1 npx jest   (package.json script: pnpm test)",
+   "count": 539,
+   "passing": true,
+   "requiresTccGrants": false
+  },
+  "hardWonKnowledge": [
+   "THE SMOKING GUN FOR LAST WEEK'S OUTAGE, and it is worse than 'the regex did not match' \u2014 apple-events never even produces the EPERM string. Both filesystem probes use fs.existsSync, which swallows every errno and returns false. (a) projectUtils.ts:64-67 `const packageJsonPath = path.join(dir, ...); if (!fs.existsSync(packageJsonPath)) { return false; }` \u2014 under a TCC folder-service denial this returns false for every ancestor, the loop exhausts, and findProjectRoot throws `Project root not found within 10 directory levels` (projectUtils.ts:28). Since index.ts:14 calls findProjectRoot() at module top level, that is a startup crash with a message that points at nothing. (b) binaryValidator.ts:100-105 `if (!fs.existsSync(normalizedPath)) { throw new BinaryValidationError(\\`Binary file not found: ...\\`, 'FILE_NOT_FOUND'); }` \u2014 findSecureBinaryPath then returns null and cliExecutor.ts:228-246 emits a 19-line CliUserError telling the user to run `pnpm store path` and rebuild the Swift binary. So a permissions denial is reported as a missing build artifact, with confident and completely wrong remediation steps. The kernel MUST stat-with-errno (fs.statSync in a try/catch, or fs.accessSync) rather than existsSync, and must classify EPERM distinctly from ENOENT. Verified empirically: I ran all 15 regexes in this server against 'Operation not permitted', \"EPERM: operation not permitted, open '/Users/x/Documents/repo/bin/EventKitCLI'\" and 'spawn EACCES' \u2014 every one returns false in both errorHandling.ts and cliExecutor.ts.",
+   "The Info.plist linker incantation \u2014 apple-events/scripts/build-swift.mjs:58-60: `// Use -Xlinker to embed Info.plist into the binary` / `// This is required for macOS to show permission dialogs for EventKit access` / `swiftc -o ... -framework EventKit -framework Foundation -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker \"${infoPlistFile}\"`. Without the __TEXT,__info_plist section a bare Swift CLI gets denied by TCC with no prompt and no usable error. The build fails hard if the plist is missing (build-swift.mjs:49-52: 'Info.plist is required for EventKit permissions to work properly.'). Paired with this, src/swift/Info.plist carries all SIX usage-description keys \u2014 NSRemindersUsageDescription AND NSRemindersFullAccessUsageDescription AND NSRemindersWriteOnlyAccessUsageDescription, and the same triple for Calendars. macOS 14 renamed the required key; shipping only the legacy one yields a silent denial. Info.plist.test.ts exists specifically to keep these from being deleted. This is the single most load-bearing piece of knowledge in the server and it lives in a build script, not in any runtime module \u2014 a kernel that only unifies runtime code will drop it.",
+   "Errors are printed to STDOUT and the process exits 1, so a naive execFile wrapper that only reads stdout on success loses the message entirely. cliExecutor.ts:150-163 handles this deliberately: the catch block pulls execError.stdout, and `if (normalized) { return parseCliOutput(normalized); }` re-enters the normal parser. EventKitCLI.swift:1560-1567 is the other half: outputError encodes ErrorOutput to stdout via `print(json)` then `exit(1)`. Any kernel exec() that discards stdout on non-zero exit will turn every EventKit error into 'Command failed with exit code 1'.",
+   "The write-only TCC tier is a real, separately-handled state that most servers forget. macOS 14 lets a user grant add-only access; EKAuthorizationStatus.writeOnly then satisfies a naive `status != .denied` check while every read returns empty. EventKitCLI.swift:1593-1595 and 1618-1620 handle it explicitly ('Calendar permission is write-only, but read access is required.'), and both TS layers carry dedicated regexes for it (errorHandling.ts:11, cliExecutor.ts:79 and :85). The kernel taxonomy needs a WRITE_ONLY class distinct from DENIED, with the distinct remedy 'change the toggle from Add Only to Full Access'.",
+   "Two unbounded-blocking hazards that compound into a permanent hang, because this server has no timeout at any layer. (a) EventKitCLI.swift:647-650 \u2014 `let semaphore = DispatchSemaphore(value: 0); eventStore.fetchReminders(matching: predicate) { ... semaphore.signal() }; semaphore.wait()` \u2014 an untimed wait; if EventKit never calls back the CLI blocks forever. (b) EventKitCLI.swift:1758-1759 \u2014 `checkAndRequestPermission()` followed by `RunLoop.main.run()`; the process only ever exits from inside handleAction/outputError, so if the .notDetermined request callback never fires (headless MCP host, no window server to draw the TCC prompt) the runloop spins indefinitely. Node's side (cliExecutor.ts:37-40) passes only `{ maxBuffer: 10 * 1024 * 1024 }` \u2014 no timeout, no killSignal \u2014 so the MCP request never returns. This is the exact class of bug apple-notes solved with its in-script `with timeout` set shorter than the outer process timeout; apple-events has neither half of that pattern.",
+   "Production error sanitization actively destroys diagnostic information, which is why last week took hours. errorHandling.ts:71-73: `return isDev ? \\`Failed to ${operation}: ${message}\\` : \\`Failed to ${operation}: System error occurred\\`;`. Anything not matched by the 7 permission regexes and not a ValidationError/CliUserError is replaced by the literal string 'System error occurred'. EPERM, EACCES, ENOBUFS, ETIMEDOUT and every unrecognized TCC message all collapse to that one string unless DEBUG is set (isDevelopmentMode, errorHandling.ts:45-50 \u2014 NODE_ENV=development OR any non-empty DEBUG). The kernel's taxonomy must be applied BEFORE this sanitizer, and the sanitizer must have an 'infrastructure error' escape hatch, or unifying the taxonomy will not change what the user sees.",
+   "-1743 is matched only by accident, and only along a path that can never carry it. Running the regexes against 'execution error: Not authorized to send Apple events to Calendar. (-1743)' returns true \u2014 but solely because /not authorized.*(calendar|reminders)/i catches the word 'Calendar'. A bare '-1743', or an Automation denial naming any other app, returns false everywhere. And the match is moot: apple-events reaches EventKit through a signed-ish Swift binary, never through Apple Events, so the -1743 domain does not apply to it at all. Do not read this server's apparent -1743 coverage as evidence the taxonomy works; it is a false positive on an unreachable path.",
+   "`import 'exit-on-epipe';` is the first import in apple-events/src/server/server.ts:6, above even the MCP SDK imports, and exit-on-epipe is a declared production dependency. This converts the EPIPE that fires when an MCP host closes stdout mid-write into a clean exit instead of an unhandled 'write EPIPE' crash. Import order matters \u2014 it must register before any stdio transport is constructed. Trivially lost in a refactor, and the failure it prevents looks like a random server crash.",
+   "The Swift binary is treated as untrusted input: binaryValidator.ts enforces absolute paths, rejects any normalized path containing '..', does path-SEGMENT matching rather than substring matching against an allowlist (binaryValidator.ts:68-91, with the comment 'Use path segment matching for better security than simple substring matching'), caps size at 50MB, requires the X_OK bit, and in production optionally verifies SHA256 against process.env.SWIFT_BINARY_HASH (binaryValidator.ts:252). getEnvironmentBinaryConfig relaxes requireAbsolutePath only under NODE_ENV=test (line 235-241). If the kernel centralizes binary/script resolution, this segment-matching detail and the test-only relaxation both need to survive.",
+   "SSRF hardening in reminder/event URL fields covers the notations people forget: apple-events/src/validation/schemas.ts:53, :65, :77 handle decimal ('2130706433 for 127.0.0.1'), hexadecimal ('0x7f000001') and octal ('0177.0.0.1') encodings of loopback, on top of IPv4 private ranges, IPv6 loopback/link-local/ULA, and cloud metadata endpoints including 169.254.169.254, 100.100.100.200 and metadata.google.internal (schemas.ts:22-28). The file itself flags the residual risk: 'Note: For production use, consider using a dedicated SSRF protection library' (schemas.ts:28).",
+   "The text-safety regex is tuned to survive real user data: schemas.ts:12-16 \u2014 'allow printable Unicode text while blocking dangerous control and delimiter chars', explicitly blocking bidi overrides U+202A-U+202E and U+2066-U+2069 'to prevent visual spoofing', while keeping CJK working: 'This keeps Chinese/Unicode names working while remaining safe with AppleScript quoting.' A kernel-level input sanitizer that is stricter than this will start rejecting legitimate reminder titles.",
+   "A dated timezone bug with the reproduction preserved in the comment \u2014 calendarRepository.ts:34-41: 'A bare calendar date (YYYY-MM-DD) must be interpreted in LOCAL time: shiftDays and formatDateOnly both work in local time, whereas new Date(\\'YYYY-MM-DD\\') parses as UTC midnight \u2014 which slips the date back a day when formatted in a negative-offset zone (e.g. 2026-02-11 + 14d rendered 2026-02-24 in EDT, not -25).' Anything in the kernel that normalizes date strings on behalf of these servers must not reintroduce UTC parsing of bare dates.",
+   "Zod generic-inference trap, recorded at schemas.ts:676-678: 'Generic over the schema rather than over T: ZodSchema<T> pins input and output to the same type, which silently degrades inference for schemas that use .default() or .transform() (defaults came back as boolean | undefined, transforms as unknown).' Relevant because every .default() in this server \u2014 including the free_slots maxResults=50 that is the ONLY real response bound it has \u2014 depends on that inference being correct.",
+   "Batch writes are serial on purpose, not by oversight \u2014 shared.ts:41-45: 'Runs an operation over many items sequentially, recording each outcome instead of aborting the whole call on the first failure. EventKit writes are not safely parallelizable against one store, so this stays serial on purpose.' If the kernel offers a concurrent exec helper, EventKit callers must be kept off it.",
+   "apple-events/check-permissions.sh:8 invokes `./bin/EventKitCLI --action read --limit 1`, but the Swift argument parser has no --limit flag and silently ignores unknown arguments \u2014 so this 'cheap' probe actually fetches every reminder in the store. It also, at line 33, probes `osascript -e 'tell application \"Reminders\" ...'` for Automation permission that the server itself never uses. If this script becomes the seed for the doctor contract, both bugs need fixing rather than porting.",
+   "Test-suite blind spot worth recording before the kernel lands: 27 suites / 539 tests pass in ~1.4s and are fully mocked (jest.mock('node:child_process') in cliExecutor.test.ts:32, plus src/utils/__mocks__/cliExecutor.ts). src/e2e.test.ts is the one exception \u2014 it spawns `node bin/run.cjs` over a real StdioClientTransport and calls reminders_tasks, reminders_lists and calendar_calendars for real \u2014 but its assertions are only `expect(result.content).toBeDefined()`, so a TCC-denied response passes exactly like a granted one. There is no test anywhere that asserts a permission error is classified, and no test for timeout, ENOBUFS, or maxBuffer overflow."
+  ],
+  "migrationRisk": "medium",
+  "migrationRiskReason": "The exec surface is tiny and clean \u2014 one execFile call site (cliExecutor.ts:32-55) behind one exported function (executeCli), consumed by exactly two repositories. Swapping in a kernel executor with timeout/retry/cap is close to mechanical, and the 539-test mocked suite will catch signature breaks immediately. Two things push it above low. First, the error contract is inverted relative to every AppleScript server: EventKitCLI writes error JSON to stdout and exits 1, so a kernel exec that follows the usual 'non-zero exit means read stderr' convention will silently discard every EventKit error message; the stdout-on-failure recovery at cliExecutor.ts:154-160 must be a first-class kernel behavior, not an apple-events special case. Second, the biggest wins here are not in the executor at all \u2014 they are the fs.existsSync-swallows-EPERM bug in projectUtils.ts:64-67 and binaryValidator.ts:100-105, and the absent response caps on reminders_tasks/calendar_events/calendar_schedule=agenda. Neither is fixed by dropping in a shared executor; both need edits in this server. Also note usesAppleScript:false \u2014 this server needs the kernel's error taxonomy, doctor contract, timeout and cap-and-disclose helpers, but nothing from an osascript-specific execution path, so a kernel designed around osascript specifics will not fit it cleanly."
+ },
+ {
+  "server": "apple-notes",
+  "language": "typescript",
+  "usesAppleScript": true,
+  "primaryBackend": "mixed \u2014 osascript (AppleScript, primary), sqlite3 CLI (-readonly, 3 modules), node:sqlite DatabaseSync (1 function), codesign via spawnSync (doctor). A JXA executor exists but is dead code in the server path.",
+  "executor": {
+   "files": [
+    "apple-notes/src/utils/applescript.ts",
+    "apple-notes/src/utils/jxa.ts",
+    "apple-notes/src/utils/checklistParser.ts",
+    "apple-notes/src/utils/noteMetadata.ts",
+    "apple-notes/src/utils/syncDetection.ts",
+    "apple-notes/src/services/appleNotesManager.ts",
+    "apple-notes/src/tools/doctor.ts",
+    "apple-notes/scripts/jxa-comparison.ts"
+   ],
+   "mechanism": "execFileSync(\"osascript\", [\"-\"], { input: script }) \u2014 argv array, script on stdin, no /bin/sh. Siblings: execFileSync(\"sqlite3\", [\"-readonly\", DB, query]) in checklistParser/noteMetadata/syncDetection (5s timeout, 3s for the FDA probe); spawnSync(\"codesign\", ...) in doctor with NO timeout; require(\"node:sqlite\").DatabaseSync in appleNotesManager.getNoteLinkFromDB. scripts/jxa-comparison.ts (dev-only) still uses the unsafe execSync(`osascript -e '<script>'`) shell form.",
+   "hasTimeout": true,
+   "timeoutDefaultMs": 30000,
+   "timeoutIsConfigurable": true,
+   "killsChildOnTimeout": true,
+   "releasesAppEventQueue": true,
+   "hasRetry": true,
+   "retryStrategy": "DEFAULT_MAX_RETRIES=2 TOTAL attempts (1 retry). Exponential backoff retryDelayMs * 2^(attempt-1), base 1000ms. Retries only on isTimeoutError() or RETRYABLE_ERROR_PATTERNS match (/timed? out/, /not responding/, /connection.*invalid/, /lost connection/, /busy/, /changed during listing/). timeoutMs is a TOTAL deadline shared across attempts, not per-attempt (applescript.ts:368-374). A retry is skipped unless Date.now()+delayMs+MIN_ATTEMPT_BUDGET_MS(1000) < deadline (applescript.ts:464). Env knobs: APPLE_NOTES_MCP_MAX_RETRIES (=1 restores fail-fast), APPLE_NOTES_MCP_RETRY_DELAY_MS. Sleep is Atomics.wait on a SharedArrayBuffer \u2014 no subprocess fork per retry (applescript.ts:183-185). Mutating operations deliberately opt OUT: executeMutationAppleScript() forces { maxRetries: 1 } because a timeout is ambiguous and a retry could duplicate a note or report a successful delete as a failure (appleNotesManager.ts:70-77). jxa.ts has NO retry at all.",
+   "hasOutputCap": true,
+   "outputCapBytes": 67108864,
+   "totalLines": 486
+  },
+  "errorHandling": {
+   "files": [
+    "apple-notes/src/utils/applescript.ts",
+    "apple-notes/src/utils/jxa.ts",
+    "apple-notes/src/utils/checklistParser.ts",
+    "apple-notes/src/utils/noteMetadata.ts",
+    "apple-notes/src/services/appleNotesManager.ts",
+    "apple-notes/src/index.ts"
+   ],
+   "classifiesPermissionErrors": true,
+   "recognizedStrings": [
+    "applescript.ts:194 /not authorized|not permitted|access.*denied/i -> 'Permission denied. Grant automation access in System Settings > Privacy & Security > Automation.'",
+    "applescript.ts:200 /application isn't running|not running/i",
+    "applescript.ts:205 /connection is invalid|lost connection/i",
+    "applescript.ts:210 /can't get note \"([^\"]+)\"/i",
+    "applescript.ts:215 /can't get note id/i",
+    "applescript.ts:220 /can't get folder \"([^\"]+)\"/i",
+    "applescript.ts:225 /can't get account \"([^\"]+)\"/i",
+    "applescript.ts:230 /folder.*already exists/i",
+    "applescript.ts:235 /can't delete|cannot delete/i",
+    "applescript.ts:240 /password protected|locked note/i",
+    "applescript.ts:247 /changed during listing/i (must stay retryable after mapping \u2014 #86)",
+    "applescript.ts:254 /syntax error|expected/i",
+    "applescript.ts:274 pre-strip regex /execution error: (.+?)(?:\\s*\\(-?\\d+\\))?$/m \u2014 DISCARDS the trailing OSStatus number, so no numeric code can ever be matched",
+    "applescript.ts:293 fallback /Can't get (.+?)\\./",
+    "applescript.ts:154-161 RETRYABLE_ERROR_PATTERNS: /timed? out/i, /not responding/i, /connection.*invalid/i, /lost connection/i, /busy/i, /changed during listing/i",
+    "checklistParser.ts:131 message.includes(\"authorization denied\") || message.includes(\"unable to open database\") -> error 'no_fda'",
+    "noteMetadata.ts:180 same two substrings -> 'no_fda'",
+    "appleNotesManager.ts:2258 appCheck.error?.includes(\"not authorized\")",
+    "appleNotesManager.ts:2280 permCheck.error?.includes(\"not authorized\") || includes(\"not permitted\")",
+    "jxa.ts:143 /Error: (.+)/ \u2014 the ONLY classification in the JXA executor; no permission taxonomy at all"
+   ],
+   "recognizesEperm": true,
+   "recognizesEacces": false,
+   "recognizesAutomation1743": false,
+   "remedyQuality": "names-pane-and-exact-steps",
+   "swallowsDetailInProduction": false
+  },
+  "diagnostics": {
+   "hasDoctor": true,
+   "toolNames": [
+    "doctor",
+    "health-check",
+    "get-sync-status"
+   ],
+   "checksPerformed": [
+    "doctor #1 \u2014 Notes.app reachability: executeAppleScript('tell application \"Notes\" to return \"ok\"') via manager.healthCheck",
+    "doctor #1 \u2014 Automation permission: 'tell application \"Notes\" to get name of account 1'; classified by substring 'not authorized' / 'not permitted'",
+    "doctor #1 \u2014 accounts present (>0) and a basic list-notes operation succeeds",
+    "doctor #2 \u2014 Accounts: manager.listAccounts(); warn on zero, fail on throw",
+    "doctor #3 \u2014 Full Disk Access: hasFullDiskAccess() = existsSync(NoteStore.sqlite) + `sqlite3 -readonly ... 'SELECT 1;'` (3s timeout); warn (not fail), names the pane, says to grant it to the launching app, fully quit and relaunch, and links the guide URL",
+    "doctor #4 \u2014 Node runtime code signature via `codesign -dvvv $(process.execPath)`; warns on Signature=adhoc or TeamIdentifier=not set",
+    "health-check \u2014 same Notes.app checks plus a standalone Full Disk Access line",
+    "get-sync-status \u2014 NoteStore WAL mtime plus a count of ZICCLOUDSTATE rows pending upload"
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "NO check that the repo/start.sh is not under ~/Documents, ~/Desktop, or ~/Downloads \u2014 the exact cause of the outage this kernel exists for. The knowledge is written down in the monorepo README.md:40-48 but no code tests for it. A prefix check on process.argv[1] against those three dirs would have turned hours of triage into one red line.",
+    "NO distinction between 'Notes.app not running' and 'Automation denied (-1743)'. healthCheck check 1 collapses both into 'Notes.app is not accessible' and only appends an Automation hint when the string 'not authorized' happens to be present.",
+    "hasFullDiskAccess() conflates three states \u2014 NoteStore.sqlite missing (no Notes account), TCC denial, and sqlite3 missing from PATH \u2014 into one boolean false, and the doctor then always blames Full Disk Access.",
+    "NO check that the `sqlite3` binary exists/executes; ENOENT is swallowed by the bare `catch {}` at checklistParser.ts:88.",
+    "NO application of the EPERM-vs-EACCES triage rule the README itself documents (EPERM = privacy denial, EACCES = ordinary file mode).",
+    "NO reporting of the effective runtime knobs (APPLE_NOTES_MCP_TIMEOUT_MS / MAX_BUFFER / MAX_RETRIES) or of whether ~/Library/Application Support/apple-notes-mcp/config.json was found and applied \u2014 loadFileConfig() returns the applied keys and index.ts:48 throws them away.",
+    "NO macOS / Notes.app version check, despite noteMetadata.ts explicitly documenting that the NoteStore schema changes between macOS releases.",
+    "NO write-path probe (create+delete a scratch note); doctor is read-only, so an account that reads but cannot write reports healthy.",
+    "doctor's own codesign spawnSync has no timeout and no output cap, so the diagnostic can itself hang."
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "search-notes \u2014 DEFAULT_SEARCH_LIMIT 50 applied via resolveSearchLimit() when limit is absent, disclosed by describeSearchLimit()",
+    "list-notes \u2014 DEFAULT_LIST_LIMIT 200 applied when limit is absent, same disclosure",
+    "fetch-attachment \u2014 readFileBase64Capped(), 25 MB default (APPLE_NOTES_MCP_MAX_ATTACHMENT_BYTES), size read from statSync BEFORE the file is read",
+    "get-note-content \u2014 per-inline-image cap of 256 KB of base64 (APPLE_NOTES_MCP_MAX_INLINE_IMAGE_BYTES) with a disclosure footer; caps each image, not the total response",
+    "batch-delete-notes / batch-move-notes \u2014 input-side only: MAX.BATCH_IDS = 500 ids, so the results array is bounded at 500 rows",
+    "export-notes-json WHEN saveToPath is passed \u2014 structuredContent.accounts is emptied and only a byte-count summary is returned"
+   ],
+   "unboundedTools": [
+    "export-notes-json without saveToPath \u2014 VERIFIED: `limit` has NO default. index.ts:2072 passes limit straight through and reachedLimit() is `limit !== undefined && total >= limit`, so an absent limit serializes the ENTIRE library inline as a second text block. This is exactly the schema-has-a-limit-param-but-no-default trap.",
+    "get-note-markdown \u2014 VERIFIED: stripLargeInlineImages is called ONLY at index.ts:381 and :413 (get-note-content). getNoteMarkdown/getNoteMarkdownById return Turndown output with base64 data: URIs intact and no size cap.",
+    "get-note-plaintext \u2014 no cap of any kind; returns the whole body",
+    "get-checklist-state \u2014 returns every parsed checklist item, no cap",
+    "list-folders \u2014 every folder in the account, one line each, no limit param at all",
+    "list-accounts \u2014 no cap (small in practice, unbounded in code)",
+    "list-shared-notes \u2014 no limit param; iterates every account's shared notes",
+    "get-selected-notes \u2014 no cap; a select-all in Notes.app returns every note's title and id",
+    "list-attachments \u2014 no cap; every attachment of the note",
+    "get-notes-stats \u2014 one line per folder across every account (`for (const folder of account.folders)`), unbounded in folder count"
+   ],
+   "capAndDiscloseHelper": "apple-notes/src/utils/searchLimit.ts \u2014 resolveSearchLimit() + describeSearchLimit(). The only reusable helper, and it serves exactly two tools. Every other cap is hand-rolled per tool: inlineImages.ts (per-image), attachmentFs.ts maxAttachmentBytes/readFileBase64Capped (per-file), MAX.* input caps at index.ts:132-144. Nothing measures or caps the assembled response in bytes."
+  },
+  "tests": {
+   "framework": "vitest 3.2.7",
+   "command": "pnpm test  (= vitest run; unit only, src/**/*.test.ts). Integration: pnpm run test:integration (= vitest run --config vitest.integration.config.ts, test/**/*.test.ts). Both: pnpm run test:all",
+   "count": 519,
+   "passing": true,
+   "requiresTccGrants": false
+  },
+  "framing": {
+   "usesRecordSeparators": true,
+   "fieldSep": "\\x1f (ASCII 31, US) \u2014 emitted from AppleScript as the literal expression `(ASCII character 31)`",
+   "recordSep": "\\x1e (ASCII 30, RS) \u2014 emitted from AppleScript as `(ASCII character 30)`",
+   "parserLocation": "apple-notes/src/services/appleNotesManager.ts:63-66 (FIELD_SEP / RECORD_SEP / AS_FIELD_SEP / AS_RECORD_SEP); split sites at :409, :940, :1494-1503 (parseBulkListOutput), :1610, :1910, :2478",
+   "notes": "The comment at appleNotesManager.ts:52-61 records why: the old printable \"|||\" / \",\" / \"ITEM\" delimiters collided with ordinary content \u2014 'a note titled \"Groceries, etc.\" used to split into phantom notes'. Control chars cannot appear in user-entered titles, folder names, or body text. The kernel MUST keep the paired representation (JS literal plus the AppleScript `(ASCII character N)` spelling) together; they are two halves of one contract and drift silently. Note the asymmetry: the batch-delete/batch-move scripts use RECORD_SEP as a TERMINATOR (trailing separator), not a separator, so a shared split() that rejects a trailing empty field would break them."
+  },
+  "hardWonKnowledge": [
+   "apple-notes/src/utils/applescript.ts:48-56 \u2014 the in-script timeout headroom, the highest-value item in this repo: \"Headroom (ms) between the in-AppleScript `with timeout` and the outer osascript process timeout. The script-level timeout must fire first so Notes.app aborts from inside its own AppleScript dispatch \u2014 releasing the event queue \u2014 before Node SIGKILLs osascript. Killing osascript alone does not stop work already dispatched into Notes.app, which is what wedges it for subsequent calls. (#17)\" Implemented at :71-74 as `with timeout of ceil((processTimeoutMs - 5000)/1000) seconds`, floored at 1s.",
+   "apple-notes/src/utils/applescript.ts:388-391 \u2014 why SIGKILL and not the default SIGTERM: \"a wedged osascript blocked on an unresponsive Notes.app can ignore SIGTERM and leak, piling up and worsening contention. SIGKILL guarantees reaping on timeout. (#17)\"",
+   "apple-notes/src/utils/applescript.ts:22-28 \u2014 the ENOBUFS trap: \"Node's execSync defaults to 1 MB, which a large Notes library (export-notes-json, full-library stat scans, long-note content) can blow past \u2014 execSync then throws ENOBUFS and the failure surfaces as an empty result. 64 MB headroom, overridable via APPLE_NOTES_MCP_MAX_BUFFER. (#16)\" Note the failure mode: not a truncated result, an EMPTY one \u2014 which is why it went undiagnosed.",
+   "apple-notes/src/utils/applescript.ts:370-374 \u2014 timeout is a TOTAL deadline, not per-attempt: \"Giving every attempt a fresh timeout let the default two-attempt path run for roughly 61 seconds, beyond the 60-second limit used by MCP clients.\" A kernel must not multiply timeout by attempts.",
+   "apple-notes/src/utils/applescript.ts:454-465 \u2014 the MIN_ATTEMPT_BUDGET_MS guard, with the exact reproducer preserved: \"Before this guard, `{ timeoutMs: 1100, retryDelayMs: 1000 }` gave attempt 2 a 90 ms process timeout wrapped in `with timeout of 1 seconds` \u2014 process kill first, headroom defeated. Reachable on defaults whenever a transient failure lands with 1-2s of budget left.\"",
+   "apple-notes/src/utils/applescript.ts:117-127 \u2014 the sync-vs-async error-shape trap: \"A timed-out execFileSync/execSync throws the underlying spawnSync error: `code` is \\\"ETIMEDOUT\\\" and `signal` is the configured killSignal (SIGKILL here, per #17). There is no `killed: true` on the sync API's error \u2014 that shape belongs to async exec.\" A kernel that only checks `killed === true` silently stops recognizing timeouts.",
+   "apple-notes/src/utils/applescript.ts:142-148 and :243-251 \u2014 a three-way string coupling that a refactor WILL break: BULK_LIST_MUTATION_ERROR (\"Notes changed during listing\") is raised by generated AppleScript, matched by RETRYABLE_ERROR_PATTERNS, AND rewritten by ERROR_MAPPINGS \u2014 and the friendly rewrite must itself still contain \"changed during listing\" so it stays retryable after mapping. \"keep all three in sync so the error stays retryable after friendly mapping.\"",
+   "apple-notes/src/services/appleNotesManager.ts:67-77 \u2014 mutations must never retry: \"A timeout is ambiguous because Notes.app may have applied the change before osascript lost the response; retrying can create duplicates or report a successful delete/move as a failure on the second attempt.\" executeMutationAppleScript() hardcodes { maxRetries: 1 }. The kernel needs an explicit idempotency flag, not a global retry policy.",
+   "apple-notes/src/utils/applescript.ts:173-185 \u2014 the retry sleep is `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`: \"unlike the previous `spawnSync(\\\"sleep\\\", ...)`, costs no process fork per retry and cannot fail into a busy-wait.\" Relevant because the whole executor is synchronous.",
+   "apple-notes/src/services/appleNotesManager.ts:52-61 \u2014 control-char framing rationale (see framing.notes): the printable-delimiter bug where a note titled \"Groceries, etc.\" split into phantom notes.",
+   "apple-notes/src/services/appleNotesManager.ts:340-348 \u2014 AppleScript date components ROLL OVER: \"Reset day to 1 BEFORE assigning month: AppleScript date components roll over, so setting month to (say) June while the variable still holds the 31st inherited from `current date` produces July 1 (June 31 doesn't exist), and the day assignment below then lands in the wrong month. Day 1 exists in every month, so year/month can never roll over. (#86)\"",
+   "apple-notes/src/services/appleNotesManager.ts:293-299 and :359-369 \u2014 locale-independent date transport: `date as text` \"depends on the system's date-format locale (the old `date as text` form did, silently falling back to \\\"now\\\" on non-US Macs)\". Dates travel as numeric \"Y-M-D-H-m-s\" built from AppleScript components (asDatePartsExpr / buildAppleScriptDateVar). Any kernel that stringifies AppleScript dates reintroduces this.",
+   "apple-notes/src/services/appleNotesManager.ts:1389-1399 and :1421-1428 \u2014 bulk-list mutation guard: name and id lists are separate snapshots of a live syncing collection, so every generated script asserts equal lengths before zipping by index, or \"a mid-listing mutation would otherwise silently mispair names and ids (grow) or read past the end of a list (shrink)\". Sliced fetches additionally remap AppleScript errNum -1719 (Invalid index) and -1728 (no such object) to the retryable mutation error, while \"Every other error number (AppleEvent timeout -1712, lost connection, permissions) is rethrown unchanged so its honest message and mapping survive.\" This is the ONLY place the codebase reasons about numeric OSStatus codes \u2014 and it does so inside AppleScript, not in TypeScript.",
+   "apple-notes/src/services/appleNotesManager.ts:766-769 and :1244-1247 \u2014 \"We avoid `set newNote` + `return id of newNote` because AppleScript fails to resolve the note reference in deeply nested folder contexts (-1728). The implicit return from `make new note` includes the ID which we parse.\"",
+   "apple-notes/src/services/appleNotesManager.ts:2436-2440 \u2014 never stream per-note dates to JS: \"instead of streaming every note's modification date to JS (unbounded, ENOBUFS-prone, locale-fragile), let AppleScript count matches via a `whose` filter \u2014 three counts per account, regardless of library size.\" Conversely at :1456-1461, date FILTERING deliberately avoids `whose`: \"Notes evaluates whose filters per-note server-side, which is as slow as per-note Apple Events.\" Count with `whose`, filter locally \u2014 a non-obvious split.",
+   "apple-notes/src/services/appleNotesManager.ts:2853-2858 and :2985-2989 \u2014 batch spawn collapse (#26): \"The old path spawned 3 processes per note (getNoteById + isNotePasswordProtectedById + deleteNoteById) \u2014 i.e. 3N spawns for N notes. This is one spawn total, with the same per-item isolation and result semantics\", achieved with a per-id AppleScript `try`. batch-move uses the native `move` command \"which preserves the note's identity and metadata rather than copy+delete\".",
+   "apple-notes/src/utils/applescript.ts:378-383 \u2014 why stdin and not `-e`: \"osascript is invoked directly (no /bin/sh in between) and reads the script from stdin: a shell-escaping bug can never become shell execution, and a huge generated script (large note bodies) can't blow the kernel's argv size limit the old `-e '<script>'` form had.\" (scripts/jxa-comparison.ts:29,45 still uses the old unsafe form \u2014 dev-only, but not the pattern to copy.)",
+   "apple-notes/src/services/appleNotesManager.ts:115-125 \u2014 escaping ORDER is load-bearing and commented step by step: ampersands first, then backslash -> &#92;, then double-quote -> \\\": \"Must happen AFTER ampersand encoding (so &#92; doesn't become &amp;#92;) and BEFORE double-quote escaping (so \\\" doesn't become &#92;\\\")\".",
+   "apple-notes/src/services/fileConfig.ts:2-13 \u2014 env escape hatch for hosts that scrub the environment: \"Some host apps (e.g. Claude Desktop) spawn the MCP server with a scrubbed environment and ignore the `env` block in their server config, so there's no way to pass `APPLE_NOTES_MCP_*` settings in.\" It is loaded FIRST at index.ts:47 \"before anything reads APPLE_NOTES_MCP_*\" \u2014 so a kernel that reads its knobs at module-import time must not be imported before this runs.",
+   "apple-notes/src/utils/docsUrls.ts:1-8 \u2014 remedy messages embed ABSOLUTE URLs, not repo-relative doc paths, because \"most users run the server from an npm install or a marketplace plugin checkout and have no repo tree in front of them \u2014 a relative path is a dead end, an absolute URL is clickable anywhere\". doctor.test.ts:90-93 asserts against the CONSTANT and the anchor spelling because \"the previous hardcoded spelling outlived the doc it pointed at and failed silently\".",
+   "apple-notes/src/services/appleNotesManager.ts:552-560 \u2014 macOS 26+ removed the `note link` AppleScript property, so deep links are recovered by reading ZIDENTIFIER from the CoreData store: \"ZIDENTIFIER has been stable in ZICCLOUDSYNCINGOBJECT since macOS 10.11 and is the same UUID that the `notes://` URL scheme uses.\"",
+   "apple-notes/src/utils/noteMetadata.ts:12-18 \u2014 sqlite is ALWAYS opened `-readonly`: \"This code never writes to the live store; doing so would corrupt CloudKit sync state.\" Plus schema feature-detection via PRAGMA table_info because \"The schema changes between macOS releases, so the reader feature-detects which columns exist and only selects those.\"",
+   "apple-notes/src/utils/attachmentFs.ts:14-19 \u2014 /tmp and /private/tmp are BOTH allowlisted \"because macOS's `/tmp` is a symlink to it: a caller that passes the resolved real path must not be rejected while the symlinked spelling of the same directory is accepted (the same reason `/private/var/folders` is here)\". Any shared path-safety helper that realpaths without listing both spellings will reject valid paths.",
+   "apple-notes/src/utils/attachmentFs.ts:31-38 \u2014 \"Notes.app's AppleScript `save` does not create intermediate directories; without this it fails with an opaque 'Failed saving an attachment to <path>' error.\"",
+   "apple-notes/src/utils/syncDetection.ts:121-124 \u2014 the pending-sync count must filter orphans: \"Core Data can retain orphaned cloud-state rows after their syncing objects are gone, so count only states still referenced by a live ZICCLOUDSYNCINGOBJECT row.\"",
+   "apple-notes/vitest.integration.config.ts:13-17 \u2014 \"vitest 3 enforces a separate hookTimeout (default 10s). The integration suite's beforeAll probes Notes.app via AppleScript, which hangs ~25s on a headless CI runner (no Notes account) before erroring and self-skipping \u2014 so the hook needs the same generous budget as the tests.\" A CI matrix that only sets testTimeout will see phantom hook failures.",
+   "README.md:40-52 (monorepo root) \u2014 the outage's root cause, documented in prose but NOT in code: \"Do not keep it in `~/Documents`, `~/Desktop`, or `~/Downloads`. Those three folders are guarded by their own TCC services, and that check is separate from Full Disk Access... every server then dies instantly with: /bin/bash: /path/to/start.sh: Operation not permitted\"; why clicking cannot fix it: \"once an app has Full Disk Access, System Settings \u2192 Privacy & Security \u2192 Files & Folders collapses its per-folder rows into a single greyed-out 'Full Disk Access' line, so the Documents toggle can no longer be set at all\"; and the triage rule the kernel taxonomy should encode verbatim: \"Operation not permitted (EPERM) is a privacy denial; Permission denied (EACCES) is an ordinary file mode.\"",
+   "apple-notes/src/tools/doctor.ts:72-75 \u2014 the ad-hoc-Node TCC churn, unique to this server and worth putting in the shared doctor contract verbatim: \"An ad-hoc signed Node (typically Homebrew's) gets a new cdhash on every update, so macOS TCC treats it as a brand-new binary and silently drops its Automation / Full Disk Access grants \u2014 the most common cause of 'this worked last week' permission flakiness.\"",
+   "apple-notes/src/utils/searchLimit.ts:1-16 \u2014 the cap exists to prevent a hard FAILURE, not just verbosity: \"an unbounded broad query \u2014 e.g. `\\\"a\\\"` matching hundreds of titles \u2014 exceeds the 30s AppleScript budget and returns a timeout *error* instead of any results (issue #100)\". With the honest caveat kept in the comment: \"This only bounds the per-note read loop, not the underlying `whose` clause.\"",
+   "apple-notes/src/utils/attachmentFs.ts:96-106 \u2014 cap-before-read discipline, and the reason the executor cap and the response cap are DIFFERENT mechanisms: \"the size is checked from filesystem metadata BEFORE the file is read, so an oversized attachment is rejected with a clear error instead of loading it (and its ~33%-larger base64) into memory. (`APPLE_NOTES_MCP_MAX_BUFFER` does not apply to `readFileSync`.)\"",
+   "apple-notes/src/index.ts:2367-2381 \u2014 \"an unhandled rejection or a stray EventEmitter 'error' must never take down this long-lived MCP server. EPIPE on stdout means the MCP client disconnected \u2014 exit cleanly rather than crash\", plus idempotent SIGINT/SIGTERM/stdin-end shutdown so the server does not linger as an orphan."
+  ],
+  "migrationRisk": "high",
+  "migrationRiskReason": "This is the reference executor, and most of what the kernel must preserve lives here as behavior spread across files rather than as a single seam. Specific hazards: (1) SCRIPT_TIMEOUT_HEADROOM_MS (5s), MIN_ATTEMPT_BUDGET_MS (1s) and the total-deadline model only work as a unit \u2014 applescript.test.ts's 40 tests do cover them, so port the tests before the code; (2) BULK_LIST_MUTATION_ERROR is a string contract spanning generated AppleScript, RETRYABLE_ERROR_PATTERNS and ERROR_MAPPINGS, and the friendly rewrite must still match the retry regex; (3) executeMutationAppleScript's maxRetries:1 opt-out means the kernel needs a per-call idempotency flag or mutations will start duplicating notes on timeout; (4) the framing constants exist in paired JS/AppleScript spellings and the batch scripts use RECORD_SEP as a terminator rather than a separator; (5) the 3367-line appleNotesManager.ts calls executeAppleScript directly in roughly 40 places, so the call-site surface is wide. On the error-taxonomy side the migration is an improvement rather than a risk, but the current state is more subtle than \"unrecognized\": apple-notes only APPEARS to handle EPERM. I replayed the live regex table against real strings \u2014 'Operation not permitted' MATCHES /not permitted/ and is rewritten to \"Grant automation access in System Settings > Privacy & Security > Automation\", which is the WRONG remedy for a folder-service denial and would have sent last week's triage down the wrong path; 'EACCES: permission denied, open ...' does NOT match (the pattern is /access.*denied/, and \"EACCES\" contains no \"access\") and falls through as raw passthrough; bare 'Permission denied' does NOT match; 'authorization denied' does NOT match the AppleScript table (only checklistParser/noteMetadata check that substring, and only for sqlite3); bare '-1743' does NOT match, and applescript.ts:274 actively STRIPS the \"(-1743)\" suffix before matching, so no numeric OSStatus can ever be classified in TypeScript. Crucially, parseErrorMessage only ever sees osascript failures: an EPERM from fs, sqlite3, or a failed spawn never reaches it \u2014 it goes through index.ts withErrorHandling, which just prefixes the raw message (no detail is swallowed, but no taxonomy is applied either). Finally, jxa.ts (169 lines) duplicates the maxBuffer/SIGKILL fixes but has no retry, no `with timeout` wrap and no taxonomy, and is dead code in the server path (only scripts/jxa-comparison.ts and its own tests import it) \u2014 it can be deleted rather than ported. Test suite risk is low: 519 unit tests across 19 files pass in ~1.4s and are fully mocked (vi.mock of child_process or of @/utils/applescript.js), needing no TCC grants; the one un-mocked path is appleNotesManager.test.ts's getNoteLinkById case, which hits the real node:sqlite NoteStore and passes either way by returning null. The 14 integration tests under test/ (separate config, not run here) do need a real writable Notes account and self-skip without one."
+ },
+ {
+  "diagnostics": {
+   "hasDoctor": false,
+   "toolNames": [
+    "config (action='info')",
+    "config (action='auth-status'|'status')",
+    "cli: applemusic-mcp status"
+   ],
+   "checksPerformed": [
+    "config(action='info'): user preferences (storefront, fetch_explicit, clean_only, auto_add)",
+    "config(action='info'): track metadata cache entry count + file size + path",
+    "config(action='info'): export files count/size/age (top 10) + cache dir existence",
+    "config(action='info'): audit log size + entry count + path",
+    "config(action='info'): library snapshot baseline + diff count",
+    "config(action='auth-status'): developer token presence, source (generated vs harvested), days-to-expiry",
+    "config(action='auth-status'): media-user-token presence",
+    "config(action='auth-status'): live amp-api session probe (ok / expired / throttled / unreachable) via amp_api.session_status()",
+    "config(action='auth-status'): APPLEMUSIC_FORCE_TOKENLESS env escape hatch is surfaced as a warning and never green-lit",
+    "config(action='auth-status'): resolved engines (playback=/queue=) and the write rail (native / sanctioned / web)",
+    "internal only, not a tool: applescript.check_ui_accessible() -> screen-locked (Quartz CGSessionCopyCurrentDictionary), Music.app window count, loginwindow heuristic",
+    "internal only: applescript.is_available() -> sys.platform=='darwin' and shutil.which('osascript')"
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "No doctor/health tool exists at all. The two closest things (config info / auth-status) are auth-and-cache reports, not environment diagnostics.",
+    "No probe of Automation (Apple Events) permission for Music.app. The -1743 classification only fires reactively, after a user-facing operation already failed.",
+    "No probe of Automation permission for System Events (required by every UI-automation path and by now_playing_if_running).",
+    "No probe of Accessibility permission (required by _jxa_mouse_* CoreGraphics posting and all of open_catalog_and_play).",
+    "No filesystem writability / TCC folder-service check on the three state roots (paths.config_dir/data_dir/cache_dir). This is exactly the failure mode that killed all 7 servers: a repo/state dir under ~/Documents returning EPERM. auth.get_config_dir() raises a RuntimeError with a decent message but nothing calls it as a diagnostic, and it does not name TCC.",
+    "check_ui_accessible() is never exposed as a tool \u2014 a user cannot ask 'is my environment set up' without triggering a real playback attempt.",
+    "No check that Music.app is installed/running (asc.now_playing_if_running exists but is not a diagnostic surface).",
+    "No check of Safari's 'Allow JavaScript from Apple Events' setting \u2014 safari._looks_like_js_blocked() only classifies it reactively.",
+    "No check that Playwright/Chromium is installed (browser.is_available()) even though it is a hard requirement off-macOS.",
+    "No macOS/Music.app version report, despite the code carrying explicit macOS 15 vs macOS 26 UI-path branches (applescript.py:1688-1713) that are the top source of UI breakage.",
+    "No screen-locked check surfaced as a diagnostic even though is_screen_locked() exists and is the single cleanest signal for 'UI automation cannot work right now'."
+   ]
+  },
+  "errorHandling": {
+   "classifiesPermissionErrors": true,
+   "files": [
+    "apple-music/src/applemusic_mcp/applescript.py",
+    "apple-music/src/applemusic_mcp/server.py",
+    "apple-music/src/applemusic_mcp/safari.py",
+    "apple-music/src/applemusic_mcp/safari_player.py",
+    "apple-music/src/applemusic_mcp/amp_api.py",
+    "apple-music/src/applemusic_mcp/auth.py"
+   ],
+   "recognizedStrings": [
+    "applescript.py:340 'applescript timed out' -> ERROR_TIMEOUT (matches its own message from run_applescript)",
+    "applescript.py:349 '-1743' -> ERROR_AUTOMATION_DENIED",
+    "applescript.py:350 'not authorized' -> ERROR_AUTOMATION_DENIED",
+    "applescript.py:351 'not allowed assistive' -> ERROR_AUTOMATION_DENIED",
+    "applescript.py:352 'assistive access' -> ERROR_AUTOMATION_DENIED",
+    "applescript.py:353 'not authorised' (British spelling) -> ERROR_AUTOMATION_DENIED",
+    "applescript.py:361 '-609' -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:362 '-10810' -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:363 \"isn't running\" -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:364 'is not running' -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:365 'connection is invalid' -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:366 \"can't get application\" -> ERROR_MUSIC_NOT_RUNNING",
+    "applescript.py:373 'syntax error' -> ERROR_SYNTAX",
+    "applescript.py:373 'expected' AND 'but found' -> ERROR_SYNTAX",
+    "applescript.py:376-381 '-1728' DELIBERATELY left as ERROR_UNKNOWN (logic-level, callers must still cascade to API)",
+    "applescript.py:1778 '-1743' -> Accessibility remedy (SECOND, inconsistent classifier: same code, different pane than classify_error)",
+    "applescript.py:1783 '-1728' -> 'Music.app UI element not found ... file a bug'",
+    "server.py:1751 '-10006' or ('shared track' AND 'user playlist') -> cloud/shared-reference-cannot-be-added message",
+    "server.py:3786 (get_playlist_tracks fallback trigger) 'Can' in output AND 'get' in output -> switch from bulk to per-track path",
+    "safari.py:65-66 'javascript' AND ('apple events' | 'not allowed' | 'turned off') -> 'Allow JavaScript from Apple Events is off'",
+    "safari_player.py:192 'not-authorized' | substring 'authoriz' -> not signed into Apple Music in Safari",
+    "safari_player.py:194 'musickit-not-ready' | 'not-ready' | 'not ready' -> player not ready",
+    "amp_api.py:110-114 HTTP 401/403 -> 're-run applemusic-mcp login'; HTTP 429 -> rate-limited, rolling ~60min window",
+    "browser.py:76-80 'playwright install' | \"executable doesn't exist\" | 'looks like playwright was just installed' -> Chromium build missing"
+   ],
+   "recognizesAutomation1743": true,
+   "recognizesEacces": false,
+   "recognizesEperm": false,
+   "remedyQuality": "names-pane-and-exact-steps",
+   "swallowsDetailInProduction": false
+  },
+  "executor": {
+   "files": [
+    "apple-music/src/applemusic_mcp/applescript.py",
+    "apple-music/src/applemusic_mcp/browser.py"
+   ],
+   "hasOutputCap": false,
+   "hasRetry": false,
+   "hasTimeout": true,
+   "killsChildOnTimeout": true,
+   "mechanism": "subprocess.run(['osascript','-e',script], capture_output=True, text=True, timeout=30) \u2014 single function applescript.run_applescript() at applescript.py:282-304; 79 call sites inside applescript.py plus 7 outside (safari.py, safari_player.py)",
+   "outputCapBytes": 0,
+   "releasesAppEventQueue": false,
+   "retryStrategy": "None in the executor. Retry lives entirely in callers and is ad-hoc: server.py PLAY_TRACK_MAX_ATTEMPTS=45 @0.2s (~10s) for post-add play; _VERIFY_ATTEMPTS=3 @1.0s for playlist-attach verify; _SYNC_POLL_BUDGET_S=30.0 @1.5s for iCloud sync with a one-shot 'Update Cloud Library' nudge after 20s; applescript.py _ensure_music_frontmost loops 20x@0.15s; open_catalog_and_play polls to a 15s deadline with 2s-then-1s backoff; safari_player._run_musickit polls window.__amR 30x@0.4s (ready 12x@0.4s).",
+   "timeoutDefaultMs": 30000,
+   "timeoutIsConfigurable": false,
+   "totalLines": 4021
+  },
+  "framing": {
+   "fieldSep": "|||",
+   "notes": "No ASCII record separators (0x1E/0x1F) anywhere. Framing is a hand-rolled '|||'-delimited, newline-terminated text protocol built by string concatenation inside each AppleScript, then split in Python. _escape_for_applescript (applescript.py:31-46) strips \\r\\n/\\r/\\n/\\t and escapes backslash+quote, but does NOT escape or strip '|', so a track/playlist/album name containing '|||' will corrupt the record (fields shift; _parse_library_track_line would mis-assign or drop the row). I did not find a test covering that case. Field counts also vary per producer: library rows are 8 fields (name|artist|album|duration|genre|year|id|explicit, 7 accepted for back-compat, applescript.py:148-181), playlist rows are 5 (name|id|smart|count|time, server-parsed at applescript.py:669-683), playlist-track rows are 7, and search_playlist rows are 5 (name|artist|album|id|explicit) \u2014 four different shapes with four separate inline parsers. The slow-path playlist fetch emits literal empty genre/year by writing '|||||||||' (applescript.py:756), which is positional and fragile. Error signalling is in-band via a magic 'ERROR:' prefix on the AppleScript return value, stripped with output[6:] at ~15 call sites (e.g. server-visible ones at applescript.py:792, 1071, 1113, 1146, 1169, 1193, 1219, 1263, 1339, 1381, 1417, 1467, 1542, 1569, 1627); a legitimate value beginning with 'ERROR:' would be misread as a failure. Note also applescript.py:1071 and several siblings call output.startswith('ERROR:') without first checking `success`, so a stderr string is compared for the sentinel.",
+   "parserLocation": "apple-music/src/applemusic_mcp/applescript.py \u2014 shared helper _parse_library_track_line (lines 148-181); plus inline per-function parsers in get_playlists (669-683), get_playlist_tracks (795-820), search_playlist (1470-1492), get_current_track (465-472, key:value not |||)",
+   "recordSep": "\\n (literal newline; get_folder_tree uses AppleScript `linefeed`)",
+   "usesRecordSeparators": false
+  },
+  "hardWonKnowledge": [
+   "apple-music/src/applemusic_mcp/applescript.py:36-46 \u2014 control characters are a REAL AppleScript injection vector, not a cosmetic concern: \"osascript accepts literal newlines inside quoted strings, so an unescaped newline followed by '& do shell script \\\"...\\\"' is a real injection vector \u2014 the shell command executes even if the overall expression errors out.\" _escape_for_applescript therefore strips \\r\\n/\\r/\\n/\\t BEFORE escaping backslash-then-quote (backslash first, or 'Playlist\\\\Test' breaks). Any kernel escape helper MUST keep both halves.",
+   "apple-music/src/applemusic_mcp/applescript.py:49-75 (issue #26) \u2014 Music.app stores typographic punctuation (U+2019 apostrophe, curly quotes, U+2026 ellipsis) while users type ASCII, and \"AppleScript's `contains` is glyph-exact for punctuation \u2014 there is no 'ignoring punctuation'\" inside a `whose` filter. Fix: split the query on every ambiguous glyph and AND the surviving fragments. Explicitly load-bearing negative knowledge: \"Deliberately EXCLUDED: hyphens / en- & em-dashes. Hyphens are far too common in ordinary titles ('Peek-A-Boo') \u2014 splitting on them would shatter the query into tiny fragments that false-match unrelated tracks.\"",
+   "apple-music/src/applemusic_mcp/applescript.py:226-279 (issue #26) \u2014 the two-stage track matcher, with a measured cost: \"The bulk-fetch is the crux: ``name of t`` *inside* a repeat is one Apple Event per track (~17s on a 12k library), while ``get name of every track`` is one event for the whole list (~0s). Music ignores AppleScript's ``ignoring`` context inside a ``whose`` filter, so the fold must happen in this in-memory loop, not in stage 1.\" Stage 2 uses `ignoring punctuation and diacriticals` to get Apple's own Unicode equivalence tables for free instead of a hand-maintained glyph list.",
+   "apple-music/src/applemusic_mcp/applescript.py:342-347 \u2014 a bug already paid for in the permission classifier: \"NOTE: bare 'not allowed' is too broad \u2014 Music.app emits 'operation not allowed on smart playlists' and similar logic-level errors. Match the full Automation-denial phrases instead.\" A shared TCC taxonomy that naively greps 'not allowed' will re-misclassify smart-playlist edits as permission denials.",
+   "apple-music/src/applemusic_mcp/applescript.py:376-381 \u2014 deliberate non-classification: \"-1728 ('can't get') deliberately classifies as ERROR_UNKNOWN. It's a logic-level error (track/playlist doesn't exist) rather than an environmental one, so callers with legitimate API fallback paths should still cascade.\" If the kernel promotes -1728 to a hard environmental error, every AppleScript\u2192REST fallback in this server stops cascading.",
+   "apple-music/src/applemusic_mcp/server.py:1696-1740 (_format_applescript_error) \u2014 the whole reason this helper exists: AppleScript failures used to surface as \"Developer token not found\" \u2014 \"even when the real cause was Music.app being closed or Automation permissions not granted\" \u2014 sending users to the token-setup CLI for a problem tokens cannot fix. The Automation remedy is fully specified: \"Open System Settings \u2192 Privacy & Security \u2192 Automation, find the app running this MCP, and enable the 'Music' toggle.\"",
+   "apple-music/src/applemusic_mcp/server.py:1755-1768 (_play_after_add) \u2014 \"a failed play attempt is either transient (the track hasn't synced locally yet \u2192 honest 'sync pending') OR a real break (Automation denied, Music not running, timeout). Surface the real cause instead of always blaming sync \u2014 otherwise the user waits forever on a 'sync pending' that will never resolve.\" This is the pattern the kernel must preserve: a retryable-vs-terminal split driven by the error classifier, not by the operation.",
+   "apple-music/src/applemusic_mcp/server.py:2915-2926 \u2014 a measured A/B that reversed the obvious design: \"Don't nudge 'Update Cloud Library' UP FRONT: measured A/B, nudging at t=0 didn't speed the cloud\u2192local sync \u2014 a sample synced ~11s WITHOUT it vs ~90s WITH (activating Music likely interrupts the in-flight sync)\". Nudging is a LAST RESORT after 20s (_SYNC_NUDGE_AFTER_S), capped by _SYNC_POLL_BUDGET_S=30.0.",
+   "apple-music/src/applemusic_mcp/server.py:2937-2942 \u2014 idempotency rule for the attach loop: \"CRITICAL: the `duplicate` add must happen AT MOST ONCE. A successful add whose verify lags (iCloud propagation) must NOT trigger a re-add \u2014 that's how the old loop stacked up to 4 duplicate copies. So: retry the ADD only while it keeps failing with 'Track not found'; once an add succeeds, stop adding and only re-poll the verify.\" A generic kernel retry-on-failure wrapper would reintroduce this exact duplicate-track bug.",
+   "apple-music/src/applemusic_mcp/applescript.py:516-537 (update_cloud_library) \u2014 rate limit + focus restoration: _CLOUD_NUDGE_MIN_INTERVAL=4.0s \"don't re-foreground Music more than ~once/4s\", and the script captures the previously-frontmost app and restores it even when the menu click fails: \"Always restore the user's focus, even if the menu item was unreachable (e.g. Sync Library disabled) \u2014 otherwise we'd steal focus and not give it back.\"",
+   "apple-music/src/applemusic_mcp/applescript.py:1888-1893 \u2014 \"AXPress (`click button ...`) silently no-ops on Music.app's custom Play / Shuffle controls \u2014 it returns success but playback never starts (verified live). So we *locate* the button across the known layouts, read its screen rect, and post a real CoreGraphics mouse click at its center.\" A false-success primitive; anything built on AppleScript `click` for Music.app is silently broken.",
+   "apple-music/src/applemusic_mcp/applescript.py:2061-2068 \u2014 \"A single click on a Music.app track row only *selects* it; playback needs a real double-click. AppleScript's ``click`` (AXPress) doesn't fire these custom rows at all, so we post two down/up pairs with the click-state event field (1) set to 1 then 2 so the OS coalesces them into a double-click.\" The magic integer field id 1 = kCGMouseEventClickState.",
+   "apple-music/src/applemusic_mcp/applescript.py:2097-2103 \u2014 macOS 26 event-coalescing bug: \"On macOS 26, posting a CGEventMouseMoved to the same coordinates as the previous position can be silently dropped. Moving to (cx+2, cy) first forces a real delta and ensures hover-dependent buttons ... are revealed before the 1.5-second dwell.\" Also applescript.py:2011 (\"0.05s lets the OS commit the CGEvent before osascript exits\") and 2039-2040 (\"0.05s down\u2192up gap is the minimum that registers as a click\") \u2014 three separately-tuned magic delays.",
+   "apple-music/src/applemusic_mcp/applescript.py:1688-1713 + 1749-1770 \u2014 the macOS 15 vs macOS 26 UI split: the search field moved from the sidebar outline to the toolbar, and \"some macOS 26 builds skip the wrapping `group 1`\", so three element paths are probed. Cmd+F is sent to make the toolbar field appear. Critically: \"Only caches when a toolbar path is confirmed \u2014 never caches the sidebar fallback so a transient cold-start miss won't permanently pin the wrong path.\" A naive memoize would permanently pin a wrong AX path after one cold start.",
+   "apple-music/src/applemusic_mcp/applescript.py:1796-1813 (is_screen_locked) \u2014 the canonical lock check and why the obvious one is wrong: \"UI automation fundamentally cannot work on a locked screen: the window server stops vending app windows, so System Events reports zero windows, the AX tree collapses, menu items go disabled, and window captures come back blank.\" Uses Quartz CGSessionCopyCurrentDictionary (CGSSessionScreenIsLocked + kCGSSessionOnConsoleKey) \u2014 \"far more reliable than probing the loginwindow process via AppleScript (which the old heuristic did and which breaks across macOS versions)\". Returns None (not False) when Quartz is missing so callers don't assume. pyproject pins pyobjc-framework-Quartz macOS-only for exactly this.",
+   "apple-music/src/applemusic_mcp/applescript.py:625-628 and 786-788 \u2014 two defensive AppleScript patterns. (a) get_playlists reads every property inside its own try: \"a single playlist that can't return, say, its persistent ID (cloud playlists mid-sync raise -1728) must not abort the whole listing.\" (b) The bulk\u2192per-track fallback in get_playlist_tracks is triggered by a string sniff with an explicit warning: \"Note: AppleScript uses straight apostrophe in \\\"Can't get\\\"\" \u2014 i.e. do not smart-quote that literal.",
+   "apple-music/src/applemusic_mcp/applescript.py:2666-2672 \u2014 \"Music.app's ``search \u2026 for`` full-text command never looks at the genre field, so routing a genre name through it would false-match tracks merely *named* after the genre (e.g. searching 'Rock' returning a pop song titled 'Rock Your Body').\" Genre queries use `whose genre contains` instead.",
+   "apple-music/src/applemusic_mcp/browser.py:89-91 \u2014 an MCP-transport landmine: \"NEVER print to stdout here: the MCP server speaks JSON-RPC over stdout, and this can run on the engine thread during a tool call. Diagnostics go to stderr.\" Any kernel that logs a subprocess/install step to stdout corrupts the JSON-RPC stream.",
+   "apple-music/src/applemusic_mcp/browser.py:199-208 \u2014 resource leak already paid for: on a failed launch the Playwright driver is explicitly stopped, \"else each failed-launch retry leaks another node/driver process.\"",
+   "apple-music/src/applemusic_mcp/browser.py:381-394 \u2014 upstream bug references: \"Playwright's persistent profile does NOT reliably persist session cookies, and an ungraceful exit can leave a stale or undecryptable one behind (known upstream bugs: playwright #36139 / #35466) \u2014 which is what makes the web player look signed-out on a later launch.\" Fix: re-assert the saved media-user-token cookie on every readiness check rather than trusting the profile.",
+   "apple-music/src/applemusic_mcp/browser.py:240-248 \u2014 env escape hatch with a stated security tradeoff: chromium_sandbox=False \"injects --no-sandbox \u2192 a scary 'Stability and security will suffer' banner and a real security downgrade\", so the sandbox stays on and --no-sandbox is stripped from defaults; APPLEMUSIC_BROWSER_NO_SANDBOX=1 re-enables it \"Only for headless/containerized testing, never the desktop default.\"",
+   "apple-music/src/applemusic_mcp/browser.py:264-271 \u2014 silent-downgrade guard: the bundled Chromium has no Widevine, so Apple Music plays 90s previews only. \"Don't let that downgrade be silent \u2014 it's the usual cause of 'playback cuts off.'\"",
+   "apple-music/src/applemusic_mcp/amp_api.py:34-58 (#42) \u2014 the rate-limit model that makes empty results ambiguous: \"Apple throttles on a ROLLING 60-MINUTE window and returns no ``Retry-After`` or ``X-Rate-Limit`` header on the web-player path, so remaining quota is unobservable \u2014 you only learn you're over by getting a 429\", and \"Probing to find out (``session_status()``) costs a REQUEST, and every request inside a rolling window pushes the recovery further out.\" Throttle state is tracked PER RAIL (WEB=amp-api/harvested token vs API=api.music.apple.com/dev token) because \"a 200 on one rail must NOT clear a live 429 on the other \u2014 that would resurrect the false 'not found' this exists to kill.\" _THROTTLE_STICKY_SECONDS=120.0.",
+   "apple-music/src/applemusic_mcp/amp_api.py:99-105 (#37) \u2014 \"log the full status + response body so failures are debuggable from the MCP logs (enolgor asked for the 500 error bodies in #37; they were being discarded).\" Body is logged at [:2000] and echoed to the user at [:200].",
+   "apple-music/src/applemusic_mcp/server.py:2766-2769 and 5405-5408 (#37) \u2014 a whole subsystem was deleted as unfixable: \"The fragile UI automation that broke across macOS/Music.app versions (#37) has been removed \u2014 there is no UI fallback. If the API path isn't available, tell the user how to enable it rather than degrading to something unreliable.\"",
+   "apple-music/src/applemusic_mcp/server.py:3805-3808 \u2014 an off-platform correctness bug: for playlist-create-in-folder, \"Off-mac there's no AppleScript... The native branch below would silently fail every osascript call and then falsely claim the playlist was removed.\" Guarded by an explicit `if not APPLESCRIPT_AVAILABLE` early route.",
+   "apple-music/pyproject.toml:33-37 \u2014 supply-chain pin with a date and a root cause: \"Upper bound is deliberate: mcp 2.0.0 (2026-07-28) moved `mcp.server.fastmcp`, so an unbounded requirement resolved to 2.x and every fresh install died on import. Supporting 2.x is a real migration, not a constraint change \u2014 until then, pin. CI installs from uv.lock and therefore never saw this.\"",
+   "apple-music/src/applemusic_mcp/paths.py:11-14 \u2014 the three env-overridable state roots (APPLEMUSIC_MCP_HOME / _CONFIG_DIR / _DATA_DIR / _CACHE_DIR) exist because \"the paths were hardcoded to ``Path.home()`` with no override, which (a) let the test suite write into the user's real dirs and (b) gave users no way to relocate data.\" This is the closest thing in the repo to a remedy for the ~/Documents EPERM incident and the kernel should generalize it. auth.py:284-291 turns an unwritable config dir into an actionable message (\"Check that the path is writable (or set APPLEMUSIC_MCP_HOME to one that is)\") \u2014 but never names TCC or Full Disk Access.",
+   "apple-music/tests/conftest.py:51-77 \u2014 two autouse hard guards that a shared kernel must not break. _block_live_applescript monkeypatches asc.run_applescript to raise: it \"closes the leak that filled the library with ``My Folder`` / ``Summer Folder`` debris (un-prefixed names the session sweep never matched).\" _block_external_network (conftest.py:26-49) raises on any non-loopback socket connect. Both key off the `ui`/`ui_live` markers. NOTE: these guards patch the single chokepoint `asc.run_applescript` \u2014 if the kernel introduces a second execution path, the guards silently stop protecting the user's real library.",
+   "apple-music/src/applemusic_mcp/safari.py:14-17 and safari_player.py:17-20 \u2014 the Safari path replaces ~500MB-1GB of Chrome/Playwright with one AppleScript `do JavaScript \"document.cookie\"` because media-user-token is not httpOnly. Its prereq is a user-owned security setting the code refuses to flip: \"Safari \u2192 Settings \u2192 Advanced \u2192 'Show features for web developers' \u2192 Develop \u2192 Allow JavaScript from Apple Events\" (\"it's a security setting, we never flip it for them\"). Transport note: \"`do JavaScript` does NOT await promises and returns immediately\", hence the window.__amR sentinel kick-and-poll.",
+   "apple-music/src/applemusic_mcp/safari_player.py:64-70 and 96-100 \u2014 WebKit sticky activation: \"WebKit won't start audio until the tab has had one real click ... so a fresh/just-reloaded Safari tab loads the queue but won't play\", surfaced as an explicit user instruction rather than a silent failure. Also, per-call monotonic sentinels (`__amR_{n}`) exist so \"a slow op that already timed out can't poison the NEXT op's poll when its promise lands late\" \u2014 a generic kernel with a fixed result key would reintroduce cross-call result poisoning."
+  ],
+  "language": "python",
+  "migrationRisk": "high",
+  "migrationRiskReason": "Largest and most AppleScript-entangled server in the repo: applescript.py is 4021 lines with 79 internal run_applescript() call sites plus 7 external (safari.py, safari_player.py), and server.py (9587 lines) touches `asc.*` 104 times. Every one of those depends on the exact (bool, str) tuple contract AND on an in-band 'ERROR:' magic prefix that ~15 call sites strip with output[6:], several of which check output.startswith('ERROR:') before checking the success flag \u2014 so any change to how failures are represented silently changes behaviour at call sites rather than failing to compile. There is no type checker in the loop (no mypy config in pyproject) to catch a signature change. Beyond that, half the value in this module is not 'run a script': it is 4021 lines of Music.app-specific AppleScript generation, macOS 15 vs macOS 26 AX-path branching, CoreGraphics CGEvent posting with hand-tuned 0.05s/0.3s/1.5s delays, and the smart-punctuation two-stage matcher \u2014 none of which belongs in a shared kernel but all of which sits in the same file as the executor. The behavioural risks of a naive swap are concrete and already documented in-repo: (1) a generic retry wrapper reintroduces the duplicate-track bug (server.py:2937-2942, 'that's how the old loop stacked up to 4 duplicate copies'); (2) a broader permission regex reintroduces the smart-playlist misclassification (applescript.py:342-347); (3) promoting -1728 to environmental breaks every AppleScript\u2192REST cascade (applescript.py:376-381); (4) adding an in-script `with timeout` (the apple-notes trick the kernel wants to standardize) interacts badly with the UI-automation scripts here that legitimately sit in `delay` loops for 15-30s. Mitigating factors: the executor itself is one 23-line function, the test suite is large (2236 collected) and fully mocked via a single chokepoint patch on asc.run_applescript, and paths.py already isolates state roots. Recommendation: extract only run_applescript + classify_error behind the kernel, keep applescript.py's script-generation intact, and preserve the 'ERROR:' sentinel contract during the transition.",
+  "primaryBackend": "mixed \u2014 osascript (AppleScript, 86 call sites) is the primary macOS backend; osascript -l JavaScript (JXA) for CoreGraphics CGEvent mouse/scroll posting (4 sites); HTTPS to api.music.apple.com and amp-api.music.apple.com via requests (~80 sites, REQUEST_TIMEOUT=30s); Playwright-driven Chrome/Chromium for the off-macOS web player and sign-in; Safari via AppleScript `do JavaScript` as the macOS web-player engine",
+  "responseBounding": {
+   "boundedTools": [
+    "library(action='search') \u2014 limit default 25 applied in the tool signature (server.py:5085) and passed through to _library_search; AppleScript side uses search_library_page(offset, limit) with a real 100-hit ceiling",
+    "library(action='browse') \u2014 limit default 100 (server.py:6281); bounded UNLESS the caller passes limit=0 (see unbounded list)",
+    "library(action='favorites') \u2014 response bounded by _apply_pagination with limit default 25; NOTE the AppleScript fetch underneath is asc.get_loved_songs(0) i.e. ALL loved tracks (server.py:6465), so it is response-bounded but not work-bounded (30s osascript timeout risk on large libraries)",
+    "library(action='recently_played'/'recently_added') \u2014 API endpoints with explicit limit params",
+    "catalog(action='search') \u2014 limit default 15 (server.py:7278); Apple caps page size at 25 anyway",
+    "catalog(action='resolve'/'match') \u2014 hard cap _MATCH_DEFAULT_CAP=25 (server.py:5889) WITH disclosure: 'Not previewed ({len(deferred)}): capped at {cap} because...' (server.py:4021). This is the one true cap-and-disclose in the codebase.",
+    "catalog(action='album_tracks') \u2014 naturally bounded by album size (one API page)",
+    "discover(*) \u2014 limit default 50 (server.py:6682), API-bounded",
+    "config(action='audit-log') \u2014 limit default 20 (server.py:7376)",
+    "config(action='info') \u2014 bounded: shows most-recent 10 export files then '... and N more'",
+    "playlist(action='tracks') on the AppleScript path \u2014 asc.get_playlist_tracks() default limit=500 is applied inside the generated AppleScript (applescript.py:767), so the macOS path is hard-capped at 500 tracks even when the tool's limit=0",
+    "queue mutations (play_next/play_last/remove/jump/set) \u2014 _queue_after(top_n=6) windows the echoed queue and discloses the remainder"
+   ],
+   "capAndDiscloseHelper": "hand-rolled per tool. There is NO shared cap-and-disclose helper. The two general-purpose pieces are (a) truncate(s, max_len) at server.py:119-121 \u2014 per-STRING ellipsis only, not per-collection; and (b) format_track_list at server.py:616-655 with MAX_OUTPUT_CHARS=50000 (server.py:47), which is a FORMAT-DEGRADATION ladder (Full -> Clipped -> Compact -> Minimal), NOT a cap: the Minimal tier still returns every row ('return [_format_minimal(t) for t in track_data], \"Minimal\"'), so a 20k-track response is emitted in full at ~50 chars/row. The only genuine cap-and-disclose is the catalog resolve path (_MATCH_DEFAULT_CAP=25 + the 'Not previewed (N): capped at 25' line at server.py:4021) and _format_queue's optional windowing (server.py:8298-8302) \u2014 which queue(action='list') does not use.",
+   "unboundedTools": [
+    "playlist(action='tracks') via the API path with the DEFAULT limit=0 \u2014 VERIFIED at server.py:3461-3499: the 'Full fetch path (filter specified or no limit)' loops `while True` paging 100 at a time until exhaustion, then _apply_pagination(track_data, 0, 0) returns everything untouched. A 5,000-track playlist returns 5,000 lines. The tool's `limit: int = 0` default is precisely the 'schema has a limit param but no default is applied' case.",
+    "queue(action='list') \u2014 VERIFIED at server.py:8375-8376: `return _format_queue(data)` is called with NO limit argument, so the `if limit is not None` windowing branch in _format_queue (server.py:8298) never fires and every Up Next item is printed. queue(action='set') can load an entire playlist into Up Next, so this is reachable in normal use.",
+    "playlist(action='folders'|'tree') \u2014 VERIFIED at server.py:3757-3764 (_playlist_tree) and applescript.py:900-977 (get_folder_tree): the AppleScript walks every folder playlist x every user playlist x nested folders and returns the whole indented tree as a raw string; the Python side returns it verbatim with no truncation and no item cap.",
+    "library(action='browse', limit=0) \u2014 VERIFIED at server.py:6357-6380: `fetch_all = limit == 0` sets `max_to_fetch = float('inf')` and the pagination loop runs until Apple stops returning data; the result is then rendered in full.",
+    "ANY tool called with format='json' or format='csv' \u2014 VERIFIED at server.py:686-727: the json branch does json.dumps over the complete `items` list and the csv branch writes every row via writer.writerows(items). Neither passes through format_track_list, so MAX_OUTPUT_CHARS never applies. This escapes the size ladder for every list-returning tool, including playlist(action='list') and library(action='browse').",
+    "playlist(action='list') \u2014 no limit parameter is applied at all (server.py:3036 _playlist_list takes format/export/full/filter only); the AppleScript enumerates every user playlist and the API branch pages until exhaustion. In format='text' it hits the non-track render path at server.py:743 which does `for item in items[:200]` \u2014 a SILENT truncation at 200 rows while the header above it prints the full `len(items)`, so the user is told '=== 750 items ===' and shown 200 with no 'showing first 200' disclosure. In format='json'/'csv' it is fully unbounded.",
+    "config(action='list-storefronts') \u2014 server.py:7465+: iterates `data.get('data', [])` from Apple's /storefronts endpoint with no limit; ~175 rows, small but uncapped by construction."
+   ]
+  },
+  "server": "apple-music",
+  "tests": {
+   "command": "cd apple-music && uv run --frozen --extra dev python -m pytest -q   (equivalently `make test`; pyproject addopts default to -m 'not slow and not ui and not ui_live')",
+   "count": 2236,
+   "framework": "pytest (with pytest-cov; coverage fail_under=90)",
+   "passing": false,
+   "requiresTccGrants": false
+  },
+  "usesAppleScript": true
+ },
+ {
+  "server": "apple-weather",
+  "language": "typescript",
+  "usesAppleScript": false,
+  "primaryBackend": "http-api (axios) + one long-lived MQTT client. VERIFIED: zero osascript/JXA/execFile/spawn/child_process anywhere under apple-weather/src. The only child_process reference in the whole server is apple-weather/scripts/update-docs-for-release.sh:56 (a release-docs script, not runtime). Backends: api.weather.gov (NOAA), api.water.noaa.gov (NWPS), waterservices.usgs.gov, Open-Meteo (forecast/archive/air-quality/marine/geocoding), NCEI (optional token), NIFC ArcGIS FeatureServer, RainViewer, NASA GIBS (URL construction only), Census.gov + Nominatim geocoders, and mqtt://blitzortung.ha.sed.pl:1883. NOT WeatherKit \u2014 no Apple API is used at all.",
+  "migrationRisk": "medium",
+  "migrationRiskReason": "No AppleScript executor to migrate, so kernel parts (1) is inapplicable and the server can adopt (2) taxonomy, (3) doctor, (4) cap-and-disclose cheaply. Risk is medium, not low, for three reasons. (a) The TCC surface is real but non-obvious: apple-weather/src/services/locationStore.ts does readFileSync/writeFileSync/mkdirSync against ~/.weather-mcp, and apple-weather/src/index.ts:63 does readFileSync on ../package.json at module load \u2014 that second one is exactly the EPERM-under-~/Documents failure mode, and it happens before any handler or error formatter is reachable, so a kernel classifier wired only into tool dispatch would not have caught last week's outage here. (b) The existing ApiError hierarchy carries per-service userMessage + helpLinks (status pages, NWS outage page, open-meteo GitHub issues) that a generic kernel classifier would flatten and lose. (c) The retry path is dead code today (see hardWonKnowledge); if the kernel replaces it with retry that actually fires, apple-weather will start hammering NOAA/NWPS, which already 429s in production (riverConditionsHandler.ts:201) \u2014 that is a behavior change disguised as a refactor and needs load consideration, not a drop-in swap.",
+  "executor": {
+   "files": [
+    "apple-weather/src/services/noaa.ts",
+    "apple-weather/src/services/openmeteo.ts",
+    "apple-weather/src/services/geocoding.ts",
+    "apple-weather/src/services/nominatim.ts",
+    "apple-weather/src/services/ncei.ts",
+    "apple-weather/src/services/nifc.ts",
+    "apple-weather/src/services/rainviewer.ts",
+    "apple-weather/src/services/gibs.ts",
+    "apple-weather/src/services/blitzortung.ts",
+    "apple-weather/src/services/locationStore.ts",
+    "apple-weather/src/config/cache.ts",
+    "apple-weather/src/analytics/transport.ts"
+   ],
+   "mechanism": "axios.create() HTTP clients (11 separate instances across 8 service classes, each configured independently \u2014 there is NO shared request helper), plus one mqtt.js persistent connection (blitzortung.ts) and one raw node:https request (analytics/transport.ts). No subprocess is ever spawned at runtime. locationStore.ts uses synchronous node:fs (readFileSync/writeFileSync/mkdirSync/existsSync) with no timeout concept.",
+   "hasTimeout": true,
+   "timeoutDefaultMs": 30000,
+   "timeoutIsConfigurable": true,
+   "hasRetry": true,
+   "retryStrategy": "Exponential backoff with jitter: baseDelay = Math.pow(2, retries) * 1000, delay = baseDelay * (0.5 + Math.random() * 0.5), maxRetries default 3, recursive re-entry. Duplicated verbatim in FOUR places: noaa.ts:184-197, openmeteo.ts:243-256, openmeteo.ts:840-853, openmeteo.ts:1006-1019. CRITICAL FINDING \u2014 IT IS DEAD CODE. The gate is `(error as Error).message.includes('rate limit') || .includes('server error') || .includes('timed out')`, but the axios response interceptor (noaa.ts:90-103) has already converted every error into an ApiError subclass whose message is one of: 'Rate limit exceeded for NOAA' (capital R \u2014 'rate limit' does not substring-match), 'NOAA API is currently unavailable' (no 'server error', no 'timed out'), or 'NOAA API request failed: timeout of 30000ms exceeded' ('timeout', not 'timed out'). I verified this empirically by constructing each error class and running the predicate: all three returned makeRequestShouldRetry=false. No request in this server is ever retried. Separately, errors/ApiError.ts:201 exports isRetryableError() which DOES correctly return true for these (it reads the isRetryable flag) \u2014 but nothing in src/ calls it. The retry machinery and the retryability oracle are wired to nothing.",
+   "hasOutputCap": false,
+   "killsChildOnTimeout": false,
+   "releasesAppEventQueue": false,
+   "totalLines": 4811
+  },
+  "errorHandling": {
+   "files": [
+    "apple-weather/src/errors/ApiError.ts",
+    "apple-weather/src/services/noaa.ts",
+    "apple-weather/src/services/openmeteo.ts",
+    "apple-weather/src/services/nominatim.ts",
+    "apple-weather/src/services/geocoding.ts",
+    "apple-weather/src/services/locationStore.ts",
+    "apple-weather/src/index.ts"
+   ],
+   "classifiesPermissionErrors": false,
+   "recognizedStrings": [
+    "ECONNREFUSED (errors/ApiError.ts:209 isRetryableError; :227 rewritten to 'Connection refused')",
+    "ETIMEDOUT (errors/ApiError.ts:210; :228 rewritten to 'Connection timed out')",
+    "ENOTFOUND (errors/ApiError.ts:211; :229 rewritten to 'Service not found')",
+    "ECONNABORTED (noaa.ts:153, noaa.ts:264, openmeteo.ts equivalents \u2014 axios timeout)",
+    "'rate limit' (noaa.ts:186, openmeteo.ts:245/842/1008 \u2014 never matches, see executor.retryStrategy)",
+    "'server error' (same four sites \u2014 never matches)",
+    "'timed out' (same four sites \u2014 never matches)",
+    "HTTP status 429 -> RateLimitError (noaa.ts:115)",
+    "HTTP status 404 -> DataNotFoundError (noaa.ts:124)",
+    "HTTP status 400-499 -> InvalidLocationError (noaa.ts:133)",
+    "HTTP status >=500 -> ServiceUnavailableError (noaa.ts:147)",
+    "HTTP 403 -> 'Nominatim API access denied' (nominatim.ts:108) \u2014 this is the closest thing to a permission string in the whole server, and it is about an HTTP 403 from OpenStreetMap, not about macOS TCC"
+   ],
+   "recognizesEperm": false,
+   "recognizesEacces": false,
+   "recognizesAutomation1743": false,
+   "remedyQuality": "none",
+   "swallowsDetailInProduction": false
+  },
+  "diagnostics": {
+   "hasDoctor": true,
+   "toolNames": [
+    "check_service_status"
+   ],
+   "checksPerformed": [
+    "NOAA api.weather.gov reachability via GET /points/39.8283,-98.5795 with a 10s override timeout (noaa.ts:229-231), classifying 429 and 404 as still-operational",
+    "Open-Meteo reachability via the same pattern (openmeteo.ts:302)",
+    "Server version, read from package.json (index.ts:61-63) and echoed with the repo URL",
+    "Cache enabled/disabled state, plus per-service hit/miss/eviction/size counters for NOAA and Open-Meteo only",
+    "Per-service remediation links (NWS planned-outages page, NWS notification page, NOAA NCO phone number, open-meteo model-updates page and GitHub issues)",
+    "Composite verdict: all-operational / partial / multiple-service-issues"
+   ],
+   "checksItShouldHaveButDoesnt": [
+    "ANY filesystem check. It never verifies that ~/.weather-mcp is creatable/readable/writable \u2014 yet that is the one path in this server where macOS TCC (EPERM/EACCES) can actually bite. A doctor here should stat and probe-write the location store and report the exact directory.",
+    "Whether the package.json read at src/index.ts:63 succeeded. That readFileSync runs at module load, before any tool handler or the ListTools/CallTool error path exists; an EPERM there kills the server with a bare stack trace via the main().catch handler at index.ts:978, with no TCC remedy text. This is precisely last week's failure mode and it is completely undiagnosed.",
+    "10 of the 11 HTTP backends. It probes only NOAA + Open-Meteo. It does NOT probe NWPS (api.water.noaa.gov, powers get_river_conditions), USGS waterservices, NIFC ArcGIS (get_wildfire_info), RainViewer (get_weather_imagery), NASA GIBS, Census.gov geocoder, or Nominatim. A user whose river/wildfire/radar tools are all failing gets a green '\u2705 All Services Operational'.",
+    "Blitzortung MQTT connectivity. get_lightning_activity silently degrades to an empty strike array on error (blitzortung.ts:484-488, 'Return empty array on error to allow graceful degradation'), so a dead broker renders as 'no lightning' \u2014 a safety-relevant false negative \u2014 and the health tool says nothing about it.",
+    "Whether NCEI_API_TOKEN is configured (isNCEIAvailable() exists at config/api.ts:30 and is never surfaced), so users cannot tell whether they are getting official NOAA normals or Open-Meteo-computed fallbacks.",
+    "Effective configuration echo: which ENABLED_TOOLS preset resolved, the resolved API_TIMEOUT_MS, CACHE_MAX_SIZE, LOG_LEVEL, LOG_PII, BLITZORTUNG_MQTT_URL, WEATHER_LIGHTNING_PREWARM. All of these silently change behavior and none are reported. (Concretely: my own shell had API_TIMEOUT_MS=900000 exported, which cache.ts clamped to 120000 with only a console.warn \u2014 nothing in the doctor output would have told me.)",
+    "Node version against the engines>=18 constraint.",
+    "Cache stats for the other six caching services (NCEI, NIFC, Nominatim, RainViewer, geocoding providers) \u2014 only NOAA and Open-Meteo expose getCacheStats() to the report.",
+    "The two health probes run sequentially and un-raced (statusHandler.ts:15-16 awaits each in turn); with a hung backend the tool itself can block for 2 x 10s."
+   ]
+  },
+  "responseBounding": {
+   "boundedTools": [
+    "get_forecast \u2014 periods sliced by hourlyEntryCap(detail, days) or days*2 (forecastHandler.ts:362,365); series values sliced to maxEntries (forecastHandler.ts:112)",
+    "get_historical_weather \u2014 limit destructured with default FormatConstants.defaultHistoricalLimit=168 when absent (historicalWeatherHandler.ts:62) and clamped to maxHistoricalLimit=744 by validateHistoricalWeatherParams (validation.ts:255-257); then Math.min(limit, hourly.time.length) at historicalWeatherHandler.ts:128. Genuinely bounded, default applied when param absent.",
+    "search_location \u2014 limit clamped Math.min(Math.max(1, limit), 50) with default 5 when absent (locationHandler.ts:51-52). Bounded.",
+    "find_weather_window \u2014 max_results clampNumber(arg, 1, 50, default 10) (weatherWindowHandler.ts:145), applied via .slice(0, maxResults) (weatherWindowHandler.ts:266). Bounded.",
+    "get_lightning_activity \u2014 strikes sliced to 10, or 25 at detail='full' (lightningHandler.ts:380-381) with an accurate 'showing N of M' disclosure at :398-402.",
+    "get_river_conditions \u2014 gauges sliced to 5 / 25-at-full (riverConditionsHandler.ts:195-197), recent crests to 3 / 25 (:379), forecast series to FORECAST_SERIES_CAP=80 (:362), each with a remainder disclosure line.",
+    "get_wildfire_info \u2014 fires sliced to 5 / 25-at-full (wildfireHandler.ts:142-143) with remainder disclosure at :149-155.",
+    "get_air_quality \u2014 forecast_days validated 1..MAX_FORECAST_DAYS=7 (airQualityHandler.ts:30,49).",
+    "get_current_conditions, get_weather_summary, get_marine_conditions \u2014 fixed-shape single-point reports, no per-item loop over an API-sized collection.",
+    "check_service_status \u2014 fixed-shape report."
+   ],
+   "unboundedTools": [
+    "get_alerts \u2014 VERIFIED UNBOUNDED by reading the loop, not the schema. alertsHandler.ts:92 is `for (const alert of sortedAlerts)` over the complete NWS feature collection with NO slice and NO cap, and the tool's inputSchema has no limit param at all. The upstream call (noaa.ts:611-614) passes no limit either; with active_only=false it hits `/alerts?point=lat,lon`, which returns that point's full alert history (NWS serves up to 500 features per page). At detail='full' each alert additionally emits the entire NWS description text (alertsHandler.ts:122-123) \u2014 multi-KB of raw product text per alert. Worst case is hundreds of KB from a single call, and this is the one tool most likely to be called during a severe-weather outbreak, i.e. exactly when the response is largest.",
+    "list_saved_locations \u2014 savedLocationsHandler.ts:294 loops over every alias in the store with no cap and no disclosure. Bounded only by how many locations the user saved (LocationStore itself imposes no count limit \u2014 only a 50-char alias limit). Lower risk than get_alerts because the data is user-authored, but there is no cap-and-disclose.",
+    "get_weather_imagery at detail='full' \u2014 weatherImageryHandler.ts:194-206 renders every frame when detail==='full' (the 3-frame condensation applies only at lower detail). RainViewer currently returns ~13 past + up to 3 nowcast frames so it does not bind today, but the cap is data-dependent, not enforced: rainviewer.ts:168-182 returns `[...pastFrames, ...forecastFrames]` with no slice.",
+    "get_saved_location error path \u2014 savedLocationsHandler.ts:372-376 interpolates the full alias list into the not-found error message with no cap.",
+    "NOTE (not a tool, but a transport-level unbounded read): NO axios client anywhere sets maxContentLength or maxBodyLength (grep returns zero hits), so every response is read into memory unbounded. This matters because noaa.ts:776-795 has a documented fallback that downloads the ENTIRE ~13MB / ~12,700-gauge NWPS catalog and filters client-side. That is the axios analogue of the ENOBUFS/maxBuffer problem the kernel is meant to solve."
+   ],
+   "capAndDiscloseHelper": "hand-rolled per tool \u2014 there is no shared helper. Each handler independently defines its own literals (10/25, 5/25, 3/25, 80, 7, 168/744) and hand-writes its own remainder sentence. The strings are near-duplicates but not identical, and the pattern is applied inconsistently (get_alerts and list_saved_locations were simply missed). A shared cap-and-disclose helper would be a clear win here."
+  },
+  "tests": {
+   "framework": "vitest 4.0.8 (globals:true, environment:node; config at apple-weather/vitest.config.ts)",
+   "command": "npm test  (= vitest run), run from /Users/harsh/Developer/apple-mcp-servers/apple-weather",
+   "count": 1332,
+   "passing": false,
+   "requiresTccGrants": false
+  },
+  "framing": {
+   "usesRecordSeparators": false,
+   "fieldSep": "n/a",
+   "recordSep": "n/a",
+   "parserLocation": "n/a \u2014 no subprocess, so no stdout framing problem exists. Data arrives as JSON over HTTPS and is parsed by axios; MQTT payloads are parsed in apple-weather/src/services/blitzortung.ts. The nearest analogue to a framing hazard is stdio contamination, and it is handled: apple-weather/src/utils/logger.ts:4-5 documents that all logging MUST go to stderr, and Logger.log() writes exclusively via console.error (logger.ts:77). One inconsistency worth carrying into the kernel: apple-weather/src/config/cache.ts uses bare console.warn (lines 43, 48, 53) for env-var clamping warnings, and apple-weather/src/config/tools.ts:300 uses console.error. console.warn in Node goes to stderr, so it does not corrupt the MCP stream today \u2014 but it is unstructured (not the JSON LogEntry shape) and it bypasses LOG_LEVEL, so it fires even at LOG_LEVEL=ERROR.",
+   "notes": "These console.* calls also run at module-import time, before any logger level is applied. If the shared kernel standardizes a logger, it must cover config-time warnings, not just request-time errors \u2014 otherwise this class of message stays unstructured."
+  },
+  "hardWonKnowledge": [
+   "DEAD RETRY PREDICATE (this is a bug the kernel must NOT inherit, and the highest-value finding here). apple-weather/src/services/noaa.ts:184-197 \u2014 `const shouldRetry = (error as Error).message.includes('rate limit') || (error as Error).message.includes('server error') || (error as Error).message.includes('timed out');`. The axios interceptor at noaa.ts:90-103 has already replaced the raw error with an ApiError subclass, so the actual messages are 'Rate limit exceeded for NOAA' (capital R), 'NOAA API is currently unavailable', and 'NOAA API request failed: timeout of 30000ms exceeded'. I constructed all three and ran the predicate: every one returns false. Zero requests are ever retried in this server, in any of the four duplicated copies (noaa.ts:184, openmeteo.ts:243, openmeteo.ts:840, openmeteo.ts:1006). The correct oracle already exists and is orphaned: errors/ApiError.ts:201 `export function isRetryableError(error: Error)` reads the structured `isRetryable` flag and returns true for all three \u2014 but nothing in src/ imports it. Kernel lesson: classify on typed error objects / error codes, never on substring-matching a message you yourself rewrote upstream. Also note the corollary risk \u2014 turning retry back on will start retrying against backends that already 429 in production.",
+   "RETRY TESTS THAT CANNOT CATCH THE RETRY BUG. apple-weather/tests/unit/retry-logic.test.ts asserts only that maxRetries defaults to 3 and that `Math.pow(2, retries) * 1000` doubles \u2014 it recomputes the backoff formula in the test body rather than driving an error through makeRequest. Its own header comment admits it: 'The actual retry behavior is tested in integration tests with real API mocks' \u2014 and no such test exists. This is exactly how the dead predicate above survived. The kernel's retry layer needs a test that injects each real error type and asserts retry fired, not a test that re-derives the arithmetic.",
+   "NWPS BBOX FILTER IS SILENTLY IGNORED WITHOUT THE EXACT PARAM NAMES. apple-weather/src/services/noaa.ts:753-755: 'NWPS API supports bounding box queries via query parameters. The endpoint requires bbox.{xmin,ymin,xmax,ymax} plus an srid; without them it ignores the filter and returns the entire ~13MB gauge catalog.' The working param set is `bbox.xmin/bbox.ymin/bbox.xmax/bbox.ymax` + `srid: 'EPSG_4326'`. This is a silent-failure API: a wrong param name does not error, it just returns everything.",
+   "THE 13MB FALLBACK AND ITS TRIPWIRE. apple-weather/src/services/noaa.ts:776-786: 'If the bounding-box query fails, fall back to downloading the entire gauge catalog and filtering client-side. This is a heavy path (~13MB / ~12,700 gauges) and should be rare \u2014 a sustained occurrence signals the NWPS bbox query has regressed (see v1.7.1 fix) and needs investigation.' It logs with `securityEvent: true` as the tripwire. Note getAllNWPSGauges() is marked @deprecated at noaa.ts:692 specifically to steer callers off it. This is the axios equivalent of the ENOBUFS/maxBuffer problem \u2014 and unlike apple-notes, there is NO cap here: no axios client in this server sets maxContentLength or maxBodyLength.",
+   "AXIOS ENCODES SPACES AS '+' AND NOMINATIM SILENTLY RETURNS ZERO RESULTS. apple-weather/src/services/geocoding.ts:11-19: \"Axios's default serializer encodes spaces as '+' (application/x-www-form-urlencoded style). Nominatim treats such '+'-encoded queries inconsistently \u2014 notably it can return ZERO matches at limit=1 for a query that returns matches with %20 encoding (e.g. 'Clare, MI'). Forcing %20 keeps geocoding results stable across providers and result limits.\" The fix is the exported `rfc3986ParamsSerializer` (geocoding.ts:20-25), attached via `paramsSerializer: { serialize: rfc3986ParamsSerializer }` to every provider client. If the kernel ever centralizes HTTP, this serializer must come with it or 'Clare, MI' silently stops geocoding.",
+   "NEVER ASK AN UPSTREAM GEOCODER FOR limit=1. apple-weather/src/services/geocoding.ts:27-34: 'Some providers (Nominatim in particular) rank or de-duplicate unreliably when asked for a single result, so we always request a small floor and then slice down to the caller's limit. Prevents fragile limit=1 lookups (e.g. the on-demand city_name resolver) from spuriously returning \"no results\".' Implemented as PROVIDER_RESULT_FLOOR=5 and `Math.max(limit, PROVIDER_RESULT_FLOOR)` at geocoding.ts:457-459, then `.slice(0, limit)` at :474. Every tool in this server accepts city_name, so a regression here breaks all 17 tools at once.",
+   "US BOUNDING BOXES OVERRUN THE BORDER \u2014 4xx FROM NOAA MUST FALL BACK, 5xx MUST NOT. Duplicated verbatim at apple-weather/src/handlers/forecastHandler.ts:265-274, currentConditionsHandler.ts:117-126, and historicalWeatherHandler.ts:313-320: 'The US bounding boxes overrun the border (Toronto, Vancouver, Windsor all sit inside them), so auto-routed points NOAA rejects fall back to Open-Meteo instead of erroring. NOAA maps the coverage 404 (\"Unable to provide data for requested point\") to DataNotFoundError and other 4xx to InvalidLocationError \u2014 both are non-retryable \"NOAA can't serve this request\" failures, so both fall back. Transient failures (RateLimitError, ServiceUnavailableError, network) still propagate, and explicit source=\"noaa\" keeps its error contract.' This is a real permanent-vs-transient taxonomy and it is the one the kernel's taxonomy must preserve: fall back on permanent, propagate on transient, and never fall back when the user pinned the source explicitly.",
+   "NWPS RETURNS PLACEHOLDER DATA THAT LOOKS LIKE REAL DATA. apple-weather/src/handlers/riverConditionsHandler.ts:20 defines NWPS_SENTINEL_THRESHOLD = -900 (guards -999 sentinels), and :29-33 documents: 'NWPS uses a year-0001 placeholder (renders as \"Dec 31, 1\") for stale/absent forecasts, so reject anything that fails to parse or predates 2000.' :41-45 combines both: a status block is displayable only if it has a real value AND a plausible timestamp, otherwise NWPS is returning '(-999 values, year-0001 time, \"fcst_not_current\"/\"obs_not_current\" category)'. Safety-critical tool \u2014 rendering a -999 flood stage raw would be worse than showing nothing.",
+   "STOP BATCHING ON THE FIRST 429 RATHER THAN PUSHING THROUGH. apple-weather/src/handlers/riverConditionsHandler.ts:199-220, with the rationale at :200-203: 'Nearest-first in small batches; NWPS rate-limits (429s observed live), so stop asking after the first rate-limit rejection \u2014 any gauge without a series just shows no trend.' TREND_FETCH_BATCH=5 (:56), Promise.allSettled per batch, `break` on any RateLimitError. 'observed live' means this was paid for in production, not theorized. Graceful partial degradation beats a failed tool call.",
+   "CAPS SIZED FROM A REAL PROBE, NOT GUESSED. apple-weather/src/handlers/riverConditionsHandler.ts:57-62: 'Max forecast-series points rendered at detail=\"full\". Live NWPS forecast series run 20-72 points at ~6h intervals (docs/output-completeness-plan.md D4 probe); 80 is a defensive ceiling that should never bind in practice.' Related note at :192-194 that detail=\"full\" 'lifts the cap to 25 (still capped, not unbounded \u2014 see D2 in docs/output-completeness-plan.md)'. IMPORTANT CAVEAT: docs/output-completeness-plan.md DOES NOT EXIST in apple-weather (there is no docs/ directory at all \u2014 verified). The probe data behind every cap literal in this server is referenced but not present in the repo; if the kernel re-derives caps it has no source to check against.",
+   "A ZERO-STRIKE LIGHTNING RESULT IS NOT THE SAME AS 'NO LIGHTNING'. apple-weather/src/services/blitzortung.ts:77-80: 'Strikes only accumulate for a geohash while it is subscribed, so a query's real monitoring coverage starts at the newest first-subscription among its geohashes \u2014 not at the requested time window. Tracked so results can disclose limited coverage.' The disclosure is rendered at lightningHandler.ts:316-336 ('Explain WHY coverage is limited so a fresh/near-zero reading is not mistaken for' safety), including a '(LIMITED DATA)' status suffix. The mitigation is the startup pre-warm at index.ts:889-897: 'The Blitzortung feed only buffers strikes for an area once it is subscribed, so the first query to a location otherwise reports zero monitoring coverage. Subscribing saved locations at startup lets their coverage accumulate before the user asks. Best-effort and fully non-blocking: it opens a persistent MQTT connection, so it is skipped when the lightning tool is disabled or when WEATHER_LIGHTNING_PREWARM=false.' Two things the kernel must preserve: the stateful-backend coverage-disclosure pattern, and the WEATHER_LIGHTNING_PREWARM escape hatch.",
+   "PLAINTEXT MQTT IS A KNOWN, DOCUMENTED, ACCEPTED RISK WITH AN ESCAPE HATCH. apple-weather/src/services/blitzortung.ts:53-64: 'SECURITY WARNING: Default broker uses PLAINTEXT MQTT (port 1883). The public Blitzortung community broker (blitzortung.ha.sed.pl) does not support TLS... allows: Network observers to see which regions you're monitoring (via MQTT subscriptions); Potential message tampering (injecting false lightning data). RECOMMENDED MITIGATIONS: 1. Set BLITZORTUNG_MQTT_URL to a TLS-enabled broker (mqtts:// or wss://) 2. Run a local MQTT proxy with TLS termination 3. Deploy in a trusted network environment. Location privacy: Geohash subscriptions have ~4-40km precision (limited tracking risk).' Env-var escape hatch: BLITZORTUNG_MQTT_URL.",
+   "UNIT-KEYED THRESHOLDS \u2014 A SINGLE FAHRENHEIT NUMBER SILENTLY BECOMES A 1.8x STRICTER RULE IN CELSIUS. apple-weather/src/config/displayThresholds.ts:14-22: 'Keyed by unit because Open-Meteo returns values already in the caller's unit \u2014 a single Fahrenheit gap would silently become a ~1.8x stricter rule in Celsius.' Same rationale for precipitation at :57-66: the traceFloor exists because 'the gate used to be `> 0` while display rounds to 2 decimals (imperial) / 1 decimal (metric)', which rendered an all-zero 'Recent Precipitation' section for trace drizzle. Both are regressions that were shipped and then fixed.",
+   "tz-lookup FIRST, COARSE US LONGITUDE BANDS SECOND, UTC LAST. apple-weather/src/utils/timezone.ts:124-130: 'Uses tz-lookup for accurate global coordinate\u2192timezone resolution (handles international locations, US territories, and no-DST zones like Arizona). Falls back to a coarse US longitude heuristic and finally UTC if the lookup fails (e.g. invalid coordinates).' The Arizona/no-DST call-out is the tell that the naive longitude heuristic was the original implementation and produced wrong times.",
+   "ALL LOGGING MUST GO TO STDERR OR THE MCP PROTOCOL BREAKS. apple-weather/src/utils/logger.ts:3-6: 'IMPORTANT: MCP servers use stdio for communication, so all logging MUST go to stderr (console.error) to avoid interfering with the MCP protocol on stdout.' Enforced by Logger.log() writing only via console.error (logger.ts:77). Universal to all 7 servers; the kernel logger must hard-enforce it rather than rely on convention.",
+   "COORDINATE REDACTION IS A DELIBERATE, DOCUMENTED DEFAULT WITH AN OPT-OUT. apple-weather/src/utils/logger.ts:163-185 redactCoordinatesForLogging() rounds to 2dp (~1.1km): 'Precise coordinates can reveal sensitive locations (homes, workplaces)... This balances GDPR/CPRA data minimization with operational observability.' Escape hatch LOG_PII=true. Reinforced by index.ts:69-93 redactSensitiveFields(), which strips latitude/longitude/location/city/address/query/zipcode/coordinates from tool args before they are logged in the CallTool catch block (index.ts:864-870). CAVEAT WORTH FLAGGING: the NOAA-fallback warn calls at forecastHandler.ts:281-285, currentConditionsHandler.ts and historicalWeatherHandler.ts:323-326 log `latitude, longitude` RAW, bypassing this convention \u2014 an inconsistency the kernel could fix by making redaction structural rather than per-call-site.",
+   "ANALYTICS MUST NEVER BREAK THE APP, AND MUST NEVER LEAVE OVER PLAINTEXT. apple-weather/src/analytics/transport.ts:28-34 rejects any non-https endpoint ('SECURITY: Only allow HTTPS for analytics transmission (H-1)'), :48 sets rejectUnauthorized: true ('H-2'), :47 sets a 5s timeout. collector.ts:62 and :159: 'Fail silently - analytics should never break the application'. anonymizer.ts:84 and :116 maintain an explicit blocklist: 'NEVER include: coordinates, location names, user input'. The H-1/H-2 tags imply a prior security review with numbered findings.",
+   "ENV VARS ARE READ AT MODULE LOAD AND CLAMPED WITH A BARE console.warn \u2014 WHICH MAKES TESTS NON-HERMETIC. apple-weather/src/config/cache.ts:29-58 getEnvNumber() clamps out-of-range values and warns; apiTimeoutMs is `getEnvNumber('API_TIMEOUT_MS', 30000, 5000, 120000)` (cache.ts:69). Because CacheConfig is a module-level const, an ambient env var silently changes behavior AND breaks the test suite. Concretely: my shell had API_TIMEOUT_MS=900000 exported, and `npm test` produced 9 failures; `env -u API_TIMEOUT_MS npx vitest run` produced 5. Three config.test.ts failures and one retry-logic.test.ts failure were pure environment leakage \u2014 the tests read the real process.env instead of injecting config. The kernel should take config as an injected object, not read process.env at import time.",
+   "COMPLETE ENV-VAR SURFACE for apple-weather (all read via process.env in src/): ENABLED_TOOLS (preset/\u00b1tool syntax, config/tools.ts), CACHE_ENABLED, CACHE_MAX_SIZE, API_TIMEOUT_MS (config/cache.ts), LOG_LEVEL, LOG_PII (utils/logger.ts), NCEI_API_TOKEN (config/api.ts), BLITZORTUNG_MQTT_URL (services/blitzortung.ts), WEATHER_LIGHTNING_PREWARM (index.ts:899), ANALYTICS_ENABLED / ANALYTICS_ENDPOINT / ANALYTICS_LEVEL / ANALYTICS_SALT (analytics/config.ts). Notably absent: any variable controlling response caps or retry \u2014 those are hardcoded literals.",
+   "THE FILESYSTEM PATH THAT WILL BITE ON TCC, AND HOW IT CURRENTLY FAILS. apple-weather/src/services/locationStore.ts:64-88 \u2014 load() wraps readFileSync in try/catch and, on ANY error including EACCES/EPERM, logs and then 'Return empty store on error rather than failing' (:85), setting this.cache = {}. A TCC denial therefore presents to the user as 'you have no saved locations' \u2014 silent data loss, not an error. save() (:96-112) is the opposite: it throws a generic `Failed to save locations to ${this.storePath}`, discarding the original error's code and message entirely, so EPERM never reaches formatErrorForUser. Neither path names System Settings, Full Disk Access, or the offending directory. Meanwhile src/index.ts:61-63 does a bare readFileSync of ../package.json at module load with no try/catch at all \u2014 an EPERM there exits via main().catch (index.ts:978-996) as a raw JSON stack dump. These three sites are where the shared TCC taxonomy has to be wired for this server; wiring it only into the CallTool handler would miss all three."
+  ]
+ }
+]

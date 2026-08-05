@@ -189,7 +189,20 @@ function sleep(ms: number): void {
  * Each entry maps a pattern (regex or string) to a user-friendly message.
  */
 const ERROR_MAPPINGS: Array<{ pattern: RegExp; message: string }> = [
-  // Permission errors
+  // EPERM — a TCC *folder-service* denial, not an Automation problem. macOS words
+  // this as "Operation not permitted". Must be tested before the Automation entry
+  // below, which would otherwise claim it and send the user to a pane that cannot
+  // fix it. Full Disk Access does NOT cover the Documents/Desktop/Downloads services
+  // for a spawned server process, so do not suggest it here.
+  {
+    pattern: /operation not permitted|\bEPERM\b/i,
+    message:
+      "Permission denied by macOS privacy protection (EPERM). If this server lives " +
+      "under ~/Documents, ~/Desktop or ~/Downloads, move it outside those folders " +
+      "(e.g. ~/Developer) and update the path in claude_desktop_config.json — " +
+      "granting Full Disk Access does not lift this for a spawned server process.",
+  },
+  // Automation (Apple Events) denial
   {
     pattern: /not authorized|not permitted|access.*denied/i,
     message:
